@@ -11,6 +11,7 @@ const JSON_HEADERS = {
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 const SOLANA_PAY_TO = "2Zfwj9JCmNfkhNxXKouHFMBq4Hb2h3zAa6Togyf8wQev";
 const PAID_TRIAGE_PATH = "/api/x402/triage";
+const INDEX_WATCH_PATH = "/api/x402/index-watch";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
 const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
 
@@ -59,6 +60,14 @@ const SERVICE_CATALOG = [
     delivery: "instant",
     url: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
     network: "Solana mainnet USDC"
+  },
+  {
+    id: "x402-index-watch-api",
+    name: "x402 Index Watch API",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
+    network: "Solana mainnet USDC"
   }
 ];
 
@@ -97,6 +106,34 @@ function getPaidTriageMiddleware() {
               scope: "Submit a public HTTPS endpoint or manifest. No payment header, wallet signature, private endpoint guessing, or paid upstream call is attempted."
             }
           })
+        },
+        [`POST ${INDEX_WATCH_PATH}`]: {
+          accepts: {
+            scheme: "exact",
+            price: "$0.01",
+            network: SOLANA_MAINNET,
+            payTo: SOLANA_PAY_TO,
+            extra: {
+              provider: "Tate Programs",
+              category: "agent-payments",
+              service: "x402-index-watch",
+              resource: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`
+            }
+          },
+          resource: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
+          description: "Paid 402 Index health watch for provider, domain, or service search terms.",
+          mimeType: "application/json",
+          unpaidResponseBody: () => ({
+            contentType: "application/json",
+            body: {
+              error: "payment_required",
+              service: "x402 Index Watch API",
+              price: "$0.01",
+              network: SOLANA_MAINNET,
+              payTo: SOLANA_PAY_TO,
+              scope: "Submit a provider, domain, or service query. Returns public 402 Index health and launch-readiness signals."
+            }
+          })
         }
       },
       facilitator,
@@ -112,7 +149,10 @@ app.get("/health", c => c.json({
   ok: true,
   service: "tateprograms-the402-provider",
   brand: c.env.BRAND_NAME || "Tate Programs",
-  paid_endpoint: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`
+  paid_endpoints: [
+    `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
+    `https://the402.tateprograms.com${INDEX_WATCH_PATH}`
+  ]
 }, 200, JSON_HEADERS));
 
 app.get("/services", c => c.json({
@@ -132,7 +172,7 @@ app.get("/.well-known/402index-verify.txt", c => new Response(INDEX_402_VERIFICA
 
 app.post("/api/triage", c => triageSurface(c.req.raw));
 
-app.use(PAID_TRIAGE_PATH, async (c, next) => {
+async function paidRouteGuard(c, next) {
   if (c.req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) });
   }
@@ -143,10 +183,19 @@ app.use(PAID_TRIAGE_PATH, async (c, next) => {
   target.headers.set("cache-control", "no-store");
   target.headers.set("access-control-expose-headers", "payment-required,x-payment-response");
   return target;
-});
+}
+
+app.use(PAID_TRIAGE_PATH, paidRouteGuard);
+app.use(INDEX_WATCH_PATH, paidRouteGuard);
 
 app.post(PAID_TRIAGE_PATH, async c => {
   const response = await triageSurface(c.req.raw);
+  response.headers.set("x-tate-programs-paid-endpoint", "x402-solana");
+  return response;
+});
+
+app.post(INDEX_WATCH_PATH, async c => {
+  const response = await indexWatchSurface(c.req.raw);
   response.headers.set("x-tate-programs-paid-endpoint", "x402-solana");
   return response;
 });
@@ -236,6 +285,88 @@ async function triageSurface(request) {
   }
 }
 
+async function indexWatchSurface(request) {
+  let input;
+  try {
+    input = await request.json();
+  } catch {
+    return json({ error: "invalid_json" }, { status: 400 });
+  }
+
+  const query = String(input.q || input.provider || input.domain || input.url || "").trim();
+  const protocol = normalizeProtocol(input.protocol || "x402");
+  const health = normalizeHealth(input.health || "");
+  const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 50);
+
+  if (!query) {
+    return json({
+      error: "query_required",
+      accepted_fields: ["q", "provider", "domain", "url"]
+    }, { status: 400 });
+  }
+
+  if (!protocol) {
+    return json({ error: "unsupported_protocol", allowed: ["L402", "x402", "MPP"] }, { status: 400 });
+  }
+
+  const params = new URLSearchParams({
+    q: query.slice(0, 160),
+    protocol,
+    limit: String(limit)
+  });
+  if (health) params.set("health", health);
+
+  const indexUrl = `https://402index.io/api/v1/services?${params.toString()}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort("timeout"), 8000);
+
+  try {
+    const response = await fetch(indexUrl, {
+      headers: { accept: "application/json" },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      return json({
+        ok: false,
+        error: "index_fetch_failed",
+        status: response.status
+      }, { status: 502 });
+    }
+
+    const data = await response.json();
+    const services = Array.isArray(data.services)
+      ? data.services.slice(0, limit).map(compactIndexService)
+      : [];
+
+    return json({
+      ok: true,
+      checked_at: new Date().toISOString(),
+      source: "402 Index public API",
+      query: {
+        q: query.slice(0, 160),
+        protocol,
+        health: health || null,
+        limit
+      },
+      total: data.total || services.length,
+      summary: summarizeIndexServices(services),
+      findings: buildIndexWatchFindings(services),
+      services,
+      paid_review_path: "https://tateprograms.com/x402-fix-sprint.html",
+      scope: "Public 402 Index metadata only. No wallet, payment header, private endpoint guessing, or paid endpoint call was attempted."
+    });
+  } catch (error) {
+    return json({
+      ok: false,
+      error: "index_watch_failed",
+      reason: error?.message || String(error)
+    }, { status: 502 });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function agentCard(env) {
   return {
     name: "Tate Programs x402 Launch Triage",
@@ -293,6 +424,37 @@ function agentCard(env) {
             origin: {
               type: "string",
               description: "Optional browser Origin for CORS checks."
+            }
+          }
+        }
+      },
+      {
+        name: "x402_index_watch",
+        url: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
+        method: "POST",
+        price: "$0.01",
+        network: SOLANA_MAINNET,
+        payTo: SOLANA_PAY_TO,
+        input_schema: {
+          type: "object",
+          required: ["q"],
+          properties: {
+            q: {
+              type: "string",
+              description: "402 Index search term, provider name, domain, or service URL."
+            },
+            protocol: {
+              type: "string",
+              enum: ["x402", "L402", "MPP"],
+              default: "x402"
+            },
+            health: {
+              type: "string",
+              enum: ["healthy", "degraded", "down", "unknown"]
+            },
+            limit: {
+              type: "number",
+              default: 25
             }
           }
         }
@@ -519,6 +681,81 @@ function buildTriageFindings(response, parsed) {
   } else {
     findings.push(`Target returned HTTP ${response.status}.`);
   }
+
+  return findings;
+}
+
+function normalizeProtocol(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "x402") return "x402";
+  if (raw === "l402") return "L402";
+  if (raw === "mpp") return "MPP";
+  return null;
+}
+
+function normalizeHealth(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return ["healthy", "degraded", "down", "unknown"].includes(raw) ? raw : null;
+}
+
+function compactIndexService(service) {
+  return {
+    id: service.id || null,
+    name: service.name || null,
+    provider: service.provider || null,
+    url: service.url || null,
+    protocol: service.protocol || null,
+    category: service.category || null,
+    price_usd: service.price_usd ?? null,
+    payment_asset: service.payment_asset || null,
+    payment_network: service.payment_network || null,
+    health_status: service.health_status || null,
+    reliability_score: service.reliability_score ?? null,
+    x402_payment_valid: service.x402_payment_valid ?? null,
+    domain_verified: service.domain_verified ?? null,
+    last_checked: service.last_checked || null,
+    registered_at: service.registered_at || null,
+    http_method: service.http_method || null
+  };
+}
+
+function summarizeIndexServices(services) {
+  const counts = {
+    total_returned: services.length,
+    healthy: 0,
+    degraded: 0,
+    down: 0,
+    unknown: 0,
+    payment_invalid: 0,
+    domain_unverified: 0
+  };
+
+  for (const service of services) {
+    if (counts[service.health_status] !== undefined) counts[service.health_status] += 1;
+    if (service.x402_payment_valid === 0 || service.x402_payment_valid === false) counts.payment_invalid += 1;
+    if (service.domain_verified === 0 || service.domain_verified === false) counts.domain_unverified += 1;
+  }
+
+  return counts;
+}
+
+function buildIndexWatchFindings(services) {
+  const findings = [];
+
+  if (!services.length) {
+    return ["No matching 402 Index services were returned for this query."];
+  }
+
+  const down = services.filter(service => service.health_status === "down");
+  const degraded = services.filter(service => service.health_status === "degraded");
+  const invalidPayment = services.filter(service => service.x402_payment_valid === 0 || service.x402_payment_valid === false);
+  const unverified = services.filter(service => service.domain_verified === 0 || service.domain_verified === false);
+
+  if (down.length) findings.push(`${down.length} service(s) are down in 402 Index.`);
+  if (degraded.length) findings.push(`${degraded.length} service(s) are degraded in 402 Index.`);
+  if (invalidPayment.length) findings.push(`${invalidPayment.length} service(s) do not currently have valid x402 payment requirements according to 402 Index.`);
+  if (unverified.length) findings.push(`${unverified.length} service(s) are not domain-verified in 402 Index.`);
+  if (!findings.length) findings.push("No obvious 402 Index health or verification findings in the returned services.");
 
   return findings;
 }
