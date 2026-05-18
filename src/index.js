@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { paymentMiddlewareFromConfig } from "@x402/hono";
 import { ExactSvmScheme } from "@x402/svm/exact/server";
 
@@ -23,6 +24,106 @@ const ALLOWED_EVENT_TYPES = new Set([
   "new_message",
   "price_accepted"
 ]);
+
+const TRIAGE_DISCOVERY = declareDiscoveryExtension({
+  input: {
+    url: "https://api.example.com/.well-known/x402",
+    method: "GET",
+    origin: "https://tateprograms.com"
+  },
+  inputSchema: {
+    properties: {
+      url: {
+        type: "string",
+        format: "uri",
+        description: "Public HTTPS manifest, paid endpoint, OpenAPI file, or discovery URL to review."
+      },
+      method: {
+        type: "string",
+        enum: ["GET", "POST", "OPTIONS"],
+        default: "GET"
+      },
+      origin: {
+        type: "string",
+        format: "uri",
+        description: "Optional browser Origin used for CORS/payment-header readability checks."
+      }
+    },
+    required: ["url"]
+  },
+  bodyType: "json",
+  output: {
+    example: {
+      ok: true,
+      response: {
+        status: 402,
+        headers: {
+          "cache-control": "no-store",
+          "access-control-allow-origin": "https://tateprograms.com"
+        }
+      },
+      x402: {
+        challenge_like: true,
+        accepts_count: 1
+      },
+      findings: [
+        "Payment challenge returned before content."
+      ]
+    }
+  }
+});
+
+const INDEX_WATCH_DISCOVERY = declareDiscoveryExtension({
+  input: {
+    q: "example.com",
+    protocol: "x402",
+    health: "down",
+    limit: 10
+  },
+  inputSchema: {
+    properties: {
+      q: {
+        type: "string",
+        description: "402 Index search term, provider name, domain, or service URL."
+      },
+      protocol: {
+        type: "string",
+        enum: ["x402", "L402", "MPP"],
+        default: "x402"
+      },
+      health: {
+        type: "string",
+        enum: ["healthy", "degraded", "down", "unknown"]
+      },
+      limit: {
+        type: "number",
+        minimum: 1,
+        maximum: 50,
+        default: 25
+      }
+    },
+    required: ["q"]
+  },
+  bodyType: "json",
+  output: {
+    example: {
+      ok: true,
+      source: "402 Index public API",
+      summary: {
+        total: 3,
+        healthy: 1,
+        degraded: 1,
+        down: 1,
+        payment_invalid: 2,
+        domain_unverified: 1
+      },
+      findings: [
+        "1 service(s) are down in 402 Index.",
+        "2 service(s) do not currently have valid x402 payment requirements according to 402 Index."
+      ]
+    }
+  }
+});
 
 const SERVICE_CATALOG = [
   {
@@ -95,6 +196,9 @@ function getPaidTriageMiddleware() {
           resource: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
           description: "Paid no-payment triage for public x402, MPP, Pay.sh, and agent-payment launch surfaces.",
           mimeType: "application/json",
+          extensions: {
+            ...TRIAGE_DISCOVERY
+          },
           unpaidResponseBody: () => ({
             contentType: "application/json",
             body: {
@@ -123,6 +227,9 @@ function getPaidTriageMiddleware() {
           resource: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
           description: "Paid 402 Index health watch for provider, domain, or service search terms.",
           mimeType: "application/json",
+          extensions: {
+            ...INDEX_WATCH_DISCOVERY
+          },
           unpaidResponseBody: () => ({
             contentType: "application/json",
             body: {
