@@ -10,8 +10,8 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
 
 ## Routes
 
-- `GET /health` returns a no-store health check.
-- `POST /webhook/the402` receives provider events from the402.
+- `GET https://the402.tateprograms.com/health` returns a no-store health check.
+- `POST https://the402.tateprograms.com/webhook/the402` receives provider events from the402.
 
 The webhook verifies:
 
@@ -45,8 +45,10 @@ npx wrangler secret put NOTIFY_WEBHOOK_URL
 Set the provider webhook URL in the402:
 
 ```text
-https://tateprograms-the402-provider.<your-workers-subdomain>.workers.dev/webhook/the402
+https://the402.tateprograms.com/webhook/the402
 ```
+
+The Worker is deployed on the custom domain `the402.tateprograms.com`; no `workers.dev` subdomain is required.
 
 ## Create Services
 
