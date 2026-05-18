@@ -12,5 +12,14 @@
   },
   "devDependencies": {
     "wrangler": "^4.18.0"
+  },
+  "dependencies": {
+    "@x402/core": "^2.12.0",
+    "@x402/hono": "^2.12.0",
+    "@x402/svm": "^2.12.0",
+    "hono": "^4.12.19"
+  },
+  "overrides": {
+    "ws": "^8.20.1"
   }
 }

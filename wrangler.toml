@@ -1,6 +1,7 @@
 name = "tateprograms-the402-provider"
 main = "src/index.js"
 compatibility_date = "2026-05-18"
+compatibility_flags = ["nodejs_compat"]
 routes = [
   { pattern = "the402.tateprograms.com", custom_domain = true }
 ]

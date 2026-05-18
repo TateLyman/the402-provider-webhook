@@ -1,7 +1,18 @@
+import { Hono } from "hono";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+import { paymentMiddlewareFromConfig } from "@x402/hono";
+import { ExactSvmScheme } from "@x402/svm/exact/server";
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
 };
+
+const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const SOLANA_PAY_TO = "2Zfwj9JCmNfkhNxXKouHFMBq4Hb2h3zAa6Togyf8wQev";
+const PAID_TRIAGE_PATH = "/api/x402/triage";
+const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
+const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
 
 const ALLOWED_EVENT_TYPES = new Set([
   "job_dispatch",
@@ -40,43 +51,111 @@ const SERVICE_CATALOG = [
     price_usd: 0.01,
     delivery: "instant",
     url: "https://the402.tateprograms.com/api/triage"
+  },
+  {
+    id: "x402-paid-triage-api",
+    name: "x402 Paid Triage API",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
+    network: "Solana mainnet USDC"
   }
 ];
 
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+const app = new Hono();
+let paidTriageMiddleware;
 
-    if (request.method === "GET" && url.pathname === "/health") {
-      return json({
-        ok: true,
-        service: "tateprograms-the402-provider",
-        brand: env.BRAND_NAME || "Tate Programs"
-      });
-    }
-
-    if (request.method === "GET" && url.pathname === "/services") {
-      return json({
-        provider: env.BRAND_NAME || "Tate Programs",
-        services: SERVICE_CATALOG
-      });
-    }
-
-    if (request.method === "GET" && url.pathname === "/.well-known/agent-card.json") {
-      return json(agentCard(env));
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/triage") {
-      return triageSurface(request);
-    }
-
-    if (request.method === "POST" && url.pathname === "/webhook/the402") {
-      return handleWebhook(request, env, ctx);
-    }
-
-    return json({ error: "not_found" }, { status: 404 });
+function getPaidTriageMiddleware() {
+  if (!paidTriageMiddleware) {
+    const facilitator = new HTTPFacilitatorClient({ url: PAYAI_FACILITATOR_URL });
+    paidTriageMiddleware = paymentMiddlewareFromConfig(
+      {
+        [`POST ${PAID_TRIAGE_PATH}`]: {
+          accepts: {
+            scheme: "exact",
+            price: "$0.01",
+            network: SOLANA_MAINNET,
+            payTo: SOLANA_PAY_TO,
+            extra: {
+              provider: "Tate Programs",
+              category: "agent-payments",
+              service: "x402-public-triage",
+              resource: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`
+            }
+          },
+          resource: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
+          description: "Paid no-payment triage for public x402, MPP, Pay.sh, and agent-payment launch surfaces.",
+          mimeType: "application/json",
+          unpaidResponseBody: () => ({
+            contentType: "application/json",
+            body: {
+              error: "payment_required",
+              service: "x402 Public Triage API",
+              price: "$0.01",
+              network: SOLANA_MAINNET,
+              payTo: SOLANA_PAY_TO,
+              scope: "Submit a public HTTPS endpoint or manifest. No payment header, wallet signature, private endpoint guessing, or paid upstream call is attempted."
+            }
+          })
+        }
+      },
+      facilitator,
+      [{ network: "solana:*", server: new ExactSvmScheme() }],
+      { appName: "Tate Programs", testnet: false }
+    );
   }
-};
+
+  return paidTriageMiddleware;
+}
+
+app.get("/health", c => c.json({
+  ok: true,
+  service: "tateprograms-the402-provider",
+  brand: c.env.BRAND_NAME || "Tate Programs",
+  paid_endpoint: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`
+}, 200, JSON_HEADERS));
+
+app.get("/services", c => c.json({
+  provider: c.env.BRAND_NAME || "Tate Programs",
+  services: SERVICE_CATALOG
+}, 200, JSON_HEADERS));
+
+app.get("/.well-known/agent-card.json", c => c.json(agentCard(c.env), 200, JSON_HEADERS));
+
+app.get("/.well-known/402index-verify.txt", c => new Response(INDEX_402_VERIFICATION_HASH, {
+  status: 200,
+  headers: {
+    "content-type": "text/plain; charset=utf-8",
+    "cache-control": "no-store"
+  }
+}));
+
+app.post("/api/triage", c => triageSurface(c.req.raw));
+
+app.use(PAID_TRIAGE_PATH, async (c, next) => {
+  if (c.req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) });
+  }
+
+  const response = await getPaidTriageMiddleware()(c, next);
+  const target = response instanceof Response ? response : c.res;
+  applyCors(target.headers, c.req.header("origin"));
+  target.headers.set("cache-control", "no-store");
+  target.headers.set("access-control-expose-headers", "payment-required,x-payment-response");
+  return target;
+});
+
+app.post(PAID_TRIAGE_PATH, async c => {
+  const response = await triageSurface(c.req.raw);
+  response.headers.set("x-tate-programs-paid-endpoint", "x402-solana");
+  return response;
+});
+
+app.post("/webhook/the402", c => handleWebhook(c.req.raw, c.env, c.executionCtx));
+
+app.notFound(c => c.json({ error: "not_found" }, 404, JSON_HEADERS));
+
+export default app;
 
 async function triageSurface(request) {
   let input;
@@ -171,6 +250,33 @@ function agentCard(env) {
         name: "x402_public_triage",
         url: "https://the402.tateprograms.com/api/triage",
         method: "POST",
+        input_schema: {
+          type: "object",
+          required: ["url"],
+          properties: {
+            url: {
+              type: "string",
+              description: "Public HTTPS manifest, paid endpoint, OpenAPI file, or discovery URL."
+            },
+            method: {
+              type: "string",
+              enum: ["GET", "POST", "OPTIONS"],
+              default: "GET"
+            },
+            origin: {
+              type: "string",
+              description: "Optional browser Origin for CORS checks."
+            }
+          }
+        }
+      },
+      {
+        name: "x402_paid_triage",
+        url: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
+        method: "POST",
+        price: "$0.01",
+        network: SOLANA_MAINNET,
+        payTo: SOLANA_PAY_TO,
         input_schema: {
           type: "object",
           required: ["url"],
@@ -446,6 +552,26 @@ function timingSafeEqual(a, b) {
     result |= left[i] ^ right[i];
   }
   return result === 0;
+}
+
+function corsHeaders(origin) {
+  const headers = new Headers({
+    "access-control-allow-methods": "POST,OPTIONS",
+    "access-control-allow-headers": "content-type,x-payment,payment-signature",
+    "access-control-expose-headers": "payment-required,x-payment-response",
+    "access-control-max-age": "600",
+    "cache-control": "no-store"
+  });
+  applyCors(headers, origin);
+  return headers;
+}
+
+function applyCors(headers, origin) {
+  const allowedOrigin = origin && /^https:\/\/([a-z0-9-]+\.)?tateprograms\.com$/i.test(origin)
+    ? origin
+    : "https://tateprograms.com";
+  headers.set("access-control-allow-origin", allowedOrigin);
+  headers.append("vary", "Origin");
 }
 
 function json(payload, init = {}) {
