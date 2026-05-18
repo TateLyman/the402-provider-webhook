@@ -12,6 +12,37 @@ const ALLOWED_EVENT_TYPES = new Set([
   "price_accepted"
 ]);
 
+const SERVICE_CATALOG = [
+  {
+    id: "x402-launch-recheck",
+    name: "x402 Launch Re-check",
+    price_usd: 49,
+    delivery: "24h",
+    url: "https://tateprograms.com/x402-fix-sprint.html"
+  },
+  {
+    id: "x402-launch-review",
+    name: "x402 Launch Review",
+    price_usd: 149,
+    delivery: "48h",
+    url: "https://tateprograms.com/x402-fix-sprint.html"
+  },
+  {
+    id: "x402-fix-sprint",
+    name: "x402 Fix Sprint",
+    price_usd: 299,
+    delivery: "72h",
+    url: "https://tateprograms.com/x402-fix-sprint.html"
+  },
+  {
+    id: "x402-public-triage-api",
+    name: "x402 Public Triage API",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: "https://the402.tateprograms.com/api/triage"
+  }
+];
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -24,6 +55,21 @@ export default {
       });
     }
 
+    if (request.method === "GET" && url.pathname === "/services") {
+      return json({
+        provider: env.BRAND_NAME || "Tate Programs",
+        services: SERVICE_CATALOG
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/.well-known/agent-card.json") {
+      return json(agentCard(env));
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/triage") {
+      return triageSurface(request);
+    }
+
     if (request.method === "POST" && url.pathname === "/webhook/the402") {
       return handleWebhook(request, env, ctx);
     }
@@ -31,6 +77,125 @@ export default {
     return json({ error: "not_found" }, { status: 404 });
   }
 };
+
+async function triageSurface(request) {
+  let input;
+  try {
+    input = await request.json();
+  } catch {
+    return json({ error: "invalid_json" }, { status: 400 });
+  }
+
+  const target = String(input.url || input.surface_url || "").trim();
+  const method = String(input.method || "GET").trim().toUpperCase();
+  const origin = String(input.origin || "").trim();
+
+  if (!["GET", "POST", "OPTIONS"].includes(method)) {
+    return json({ error: "unsupported_method", allowed: ["GET", "POST", "OPTIONS"] }, { status: 400 });
+  }
+
+  const safe = validatePublicHttpsUrl(target);
+  if (!safe.ok) {
+    return json({ error: safe.reason }, { status: 400 });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort("timeout"), 8000);
+
+  try {
+    const headers = new Headers({
+      accept: "application/json,text/plain,*/*"
+    });
+    if (origin) headers.set("origin", origin);
+    if (method === "OPTIONS") {
+      headers.set("access-control-request-method", "POST");
+      headers.set("access-control-request-headers", "x-payment,content-type");
+    }
+
+    const response = await fetch(target, {
+      method,
+      headers,
+      body: method === "POST" ? "{}" : undefined,
+      signal: controller.signal
+    });
+
+    const raw = await response.text();
+    const body = raw.slice(0, 65536);
+    const parsed = parseJson(body);
+    const paymentHeaders = pickHeaders(response.headers, [
+      "www-authenticate",
+      "x-payment-required",
+      "x-price-usdc",
+      "x-payment-requirements",
+      "cache-control",
+      "access-control-allow-origin",
+      "access-control-allow-headers",
+      "access-control-expose-headers"
+    ]);
+
+    return json({
+      ok: true,
+      checked_at: new Date().toISOString(),
+      input: { url: target, method, origin: origin || null },
+      response: {
+        status: response.status,
+        content_type: response.headers.get("content-type"),
+        headers: paymentHeaders
+      },
+      x402: summarizeX402(parsed, response.headers),
+      findings: buildTriageFindings(response, parsed),
+      scope: "Public no-payment triage only. No wallet, payment header, signature, private endpoint guessing, or paid call was attempted."
+    });
+  } catch (error) {
+    return json({
+      ok: false,
+      error: "fetch_failed",
+      reason: error?.message || String(error)
+    }, { status: 502 });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function agentCard(env) {
+  return {
+    name: "Tate Programs x402 Launch Triage",
+    description: "Public no-payment triage for x402, MPP, Pay.sh, and agent-payment launch surfaces. Returns status, payment headers, challenge summary, cache/CORS notes, and the fixed-scope paid review path.",
+    url: env.PUBLIC_SITE || "https://tateprograms.com",
+    provider: {
+      name: env.BRAND_NAME || "Tate Programs",
+      email: "hello@tateprograms.com"
+    },
+    endpoints: [
+      {
+        name: "x402_public_triage",
+        url: "https://the402.tateprograms.com/api/triage",
+        method: "POST",
+        input_schema: {
+          type: "object",
+          required: ["url"],
+          properties: {
+            url: {
+              type: "string",
+              description: "Public HTTPS manifest, paid endpoint, OpenAPI file, or discovery URL."
+            },
+            method: {
+              type: "string",
+              enum: ["GET", "POST", "OPTIONS"],
+              default: "GET"
+            },
+            origin: {
+              type: "string",
+              description: "Optional browser Origin for CORS checks."
+            }
+          }
+        }
+      }
+    ],
+    service_catalog: "https://tateprograms.com/services.json",
+    paid_fix_sprint: env.FIX_SPRINT_URL || "https://tateprograms.com/x402-fix-sprint.html"
+  };
+}
 
 async function handleWebhook(request, env, ctx) {
   const body = await request.text();
@@ -150,6 +315,106 @@ function summarizeEvent(eventType, payload, env) {
 
 function normalizeType(type) {
   return String(type || "").trim().toLowerCase();
+}
+
+function validatePublicHttpsUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return { ok: false, reason: "invalid_url" };
+  }
+
+  if (url.protocol !== "https:") {
+    return { ok: false, reason: "https_required" };
+  }
+
+  const hostname = url.hostname.toLowerCase();
+  if (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname === "127.0.0.1" ||
+    hostname === "0.0.0.0" ||
+    hostname === "::1" ||
+    /^10\./.test(hostname) ||
+    /^192\.168\./.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname) ||
+    /^169\.254\./.test(hostname)
+  ) {
+    return { ok: false, reason: "private_or_local_target_blocked" };
+  }
+
+  return { ok: true };
+}
+
+function parseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function pickHeaders(headers, names) {
+  const picked = {};
+  for (const name of names) {
+    const value = headers.get(name);
+    if (value) picked[name] = value;
+  }
+  return picked;
+}
+
+function summarizeX402(parsed, headers) {
+  const accepts = Array.isArray(parsed?.accepts) ? parsed.accepts : [];
+  const firstAccept = accepts[0] || null;
+  const requirementsHeader = headers.get("x-payment-requirements") || headers.get("www-authenticate");
+
+  return {
+    challenge_like: Boolean(parsed?.x402Version || accepts.length || requirementsHeader),
+    version: parsed?.x402Version || parsed?.version || null,
+    accepts_count: accepts.length,
+    first_accept: firstAccept
+      ? {
+          scheme: firstAccept.scheme || null,
+          network: firstAccept.network || null,
+          asset: firstAccept.asset || null,
+          maxAmountRequired: firstAccept.maxAmountRequired || firstAccept.amount || null,
+          has_resource: Boolean(firstAccept.resource || firstAccept.extra?.resource)
+        }
+      : null,
+    resource_url: parsed?.resource?.url || parsed?.resource || null
+  };
+}
+
+function buildTriageFindings(response, parsed) {
+  const findings = [];
+  const cacheControl = response.headers.get("cache-control") || "";
+  const allowOrigin = response.headers.get("access-control-allow-origin");
+  const exposeHeaders = response.headers.get("access-control-expose-headers") || "";
+  const accepts = Array.isArray(parsed?.accepts) ? parsed.accepts : [];
+
+  if (response.status === 402) {
+    findings.push("Payment challenge returned before content.");
+    if (!/no-store|private/i.test(cacheControl)) {
+      findings.push("402 response does not advertise no-store/private cache policy.");
+    }
+    if (!allowOrigin) {
+      findings.push("402 response does not expose Access-Control-Allow-Origin for browser agents.");
+    }
+    if (!/x-payment|payment/i.test(exposeHeaders)) {
+      findings.push("402 response does not expose payment-related headers to browser agents.");
+    }
+    if (accepts.length && accepts.some((accept) => !(accept.resource || accept.extra?.resource))) {
+      findings.push("At least one accept leg does not repeat the charged resource URL.");
+    }
+  } else if (response.status >= 200 && response.status < 300) {
+    findings.push("Target returned success without a payment challenge for this no-payment probe.");
+  } else {
+    findings.push(`Target returned HTTP ${response.status}.`);
+  }
+
+  return findings;
 }
 
 async function hmacSha256(message, secret) {
