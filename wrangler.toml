@@ -1,0 +1,9 @@
+name = "tateprograms-the402-provider"
+main = "src/index.js"
+compatibility_date = "2026-05-18"
+
+[vars]
+BRAND_NAME = "Tate Programs"
+PUBLIC_SITE = "https://tateprograms.com"
+FIX_SPRINT_URL = "https://tateprograms.com/x402-fix-sprint.html"
+REQUIRE_SIGNATURE = "true"

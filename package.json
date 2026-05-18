@@ -1,0 +1,16 @@
+{
+  "name": "the402-provider-webhook",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tate Programs provider webhook for x402 launch review and fix sprint services on the402.",
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/index.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.18.0"
+  }
+}

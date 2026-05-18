@@ -1,0 +1,59 @@
+# Tate Programs the402 Provider Webhook
+
+Cloudflare Worker webhook for Tate Programs services listed on the402:
+
+- `$49` x402 Launch Re-check
+- `$149` x402 Launch Review
+- `$299` x402 Fix Sprint
+
+These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-payment launch surfaces.
+
+## Routes
+
+- `GET /health` returns a no-store health check.
+- `POST /webhook/the402` receives provider events from the402.
+
+The webhook verifies:
+
+- `X-Platform-Secret` against `THE402_API_KEY` when present.
+- `X-Webhook-Signature` and `X-Webhook-Timestamp` against `THE402_WEBHOOK_SECRET`.
+
+It acknowledges promptly, optionally forwards a notification to `NOTIFY_WEBHOOK_URL`, and marks fixed-price jobs as `in_progress` through the platform callback URL.
+
+## Local Checks
+
+```bash
+npm install
+npm run check
+```
+
+## Deploy
+
+```bash
+npm install
+npx wrangler secret put THE402_API_KEY
+npx wrangler secret put THE402_WEBHOOK_SECRET
+npx wrangler deploy
+```
+
+Optional:
+
+```bash
+npx wrangler secret put NOTIFY_WEBHOOK_URL
+```
+
+Set the provider webhook URL in the402:
+
+```text
+https://tateprograms-the402-provider.<your-workers-subdomain>.workers.dev/webhook/the402
+```
+
+## Create Services
+
+After the provider account exists and `THE402_API_KEY` is available locally:
+
+```bash
+THE402_API_KEY=sk_... bash docs/create-services.sh
+```
+
+Do not commit platform API keys, webhook secrets, wallet recovery data, or customer payloads.

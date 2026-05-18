@@ -1,0 +1,226 @@
+[
+  {
+    "slug": "x402-launch-recheck",
+    "name": "x402 Launch Re-check",
+    "description": "Private no-payment re-check of one x402 manifest, paid endpoint, or launch PR after you apply a fix. You get a concise pass/fail note, remaining blockers, and a clean public wording option if you want to co-promote the result.",
+    "price": {
+      "fixed": "$49.00"
+    },
+    "service_type": "human_service",
+    "pricing_model": "fixed",
+    "fulfillment_type": "human",
+    "estimated_delivery": "24h",
+    "category": "developer-tools",
+    "tags": [
+      "x402",
+      "agent-payments",
+      "launch-review",
+      "security",
+      "developer-tools"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "surface_url",
+        "authorized_scope",
+        "contact_email"
+      ],
+      "properties": {
+        "surface_url": {
+          "type": "string",
+          "description": "Public manifest, endpoint, docs page, GitHub PR, or issue URL to re-check."
+        },
+        "authorized_scope": {
+          "type": "string",
+          "description": "Confirm the review is authorized and limited to public/no-payment checks unless you explicitly provide a test fixture."
+        },
+        "previous_context_url": {
+          "type": "string",
+          "description": "Optional previous finding, PR comment, issue, or report URL."
+        },
+        "contact_email": {
+          "type": "string",
+          "description": "Best email for private delivery and follow-up questions."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Anything you changed and want checked first."
+        }
+      }
+    },
+    "deliverable_schema": {
+      "summary": {
+        "type": "string",
+        "description": "Pass/fail result with the main launch risk."
+      },
+      "remaining_blockers": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Remaining items to fix, if any."
+      },
+      "public_wording_option": {
+        "type": "string",
+        "description": "Optional short public note for mutual sign-off."
+      }
+    }
+  },
+  {
+    "slug": "x402-launch-review",
+    "name": "x402 Launch Review",
+    "description": "Private launch-readiness review for an x402, Pay.sh, or agent-payment surface. Covers manifest/discovery shape, 402 challenge behavior, resource binding, price/rail consistency, browser-agent CORS, cache controls, payment metadata exposure, and patch order.",
+    "price": {
+      "fixed": "$149.00"
+    },
+    "service_type": "human_service",
+    "pricing_model": "fixed",
+    "fulfillment_type": "human",
+    "estimated_delivery": "48h",
+    "category": "developer-tools",
+    "tags": [
+      "x402",
+      "pay-sh",
+      "agent-commerce",
+      "launch-review",
+      "mcp"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "project_url",
+        "surface_url",
+        "authorized_scope",
+        "contact_email"
+      ],
+      "properties": {
+        "project_url": {
+          "type": "string",
+          "description": "Main project, docs, repo, or launch PR URL."
+        },
+        "surface_url": {
+          "type": "string",
+          "description": "Primary x402 manifest, OpenAPI document, paid endpoint, or registry PR to review."
+        },
+        "authorized_scope": {
+          "type": "string",
+          "description": "Confirm authorized public/no-payment review scope and list any test endpoints you permit."
+        },
+        "expected_price_or_network": {
+          "type": "string",
+          "description": "Expected price, token, network, facilitator, or rail if known."
+        },
+        "contact_email": {
+          "type": "string",
+          "description": "Best email for private report delivery."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Launch deadline, known concerns, or areas to skip."
+        }
+      }
+    },
+    "deliverable_schema": {
+      "spend_map": {
+        "type": "object",
+        "description": "What an agent can pay for, expected limits, and observed challenge behavior."
+      },
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Prioritized launch blockers and trust gaps."
+      },
+      "patch_order": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Suggested implementation order for fastest safe launch."
+      }
+    }
+  },
+  {
+    "slug": "x402-fix-sprint",
+    "name": "x402 Fix Sprint",
+    "description": "Small authorized implementation sprint for one x402 launch blocker: manifest/discovery cleanup, CORS/payment-header readability, cache-control fixes, resource URL binding, docs/OpenAPI alignment, or CI gate setup. Includes one follow-up re-check.",
+    "price": {
+      "fixed": "$299.00"
+    },
+    "service_type": "human_service",
+    "pricing_model": "fixed",
+    "fulfillment_type": "human",
+    "estimated_delivery": "72h",
+    "category": "developer-tools",
+    "tags": [
+      "x402",
+      "fix-sprint",
+      "agent-payments",
+      "cors",
+      "openapi",
+      "ci"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "repo_url",
+        "blocker_type",
+        "authorized_scope",
+        "contact_email"
+      ],
+      "properties": {
+        "repo_url": {
+          "type": "string",
+          "description": "GitHub repo URL or private access instructions if already arranged outside the marketplace."
+        },
+        "surface_url": {
+          "type": "string",
+          "description": "Public endpoint, manifest, docs page, OpenAPI doc, or PR showing the blocker."
+        },
+        "blocker_type": {
+          "type": "string",
+          "enum": [
+            "manifest_or_discovery",
+            "cors_or_headers",
+            "cache_controls",
+            "resource_binding",
+            "price_or_network_docs",
+            "ci_gate",
+            "other"
+          ],
+          "description": "The main blocker you want fixed."
+        },
+        "authorized_scope": {
+          "type": "string",
+          "description": "Confirm the repo/surface is yours or you have authorization, and describe exactly what can be changed."
+        },
+        "contact_email": {
+          "type": "string",
+          "description": "Best email for private delivery and clarification."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Branch, framework, deadlines, test commands, or review expectations."
+        }
+      }
+    },
+    "deliverable_schema": {
+      "changes_summary": {
+        "type": "string",
+        "description": "What changed and why."
+      },
+      "verification": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Commands, probes, or URLs used to verify the fix."
+      },
+      "follow_up_recheck": {
+        "type": "string",
+        "description": "Result of the included follow-up re-check."
+      }
+    }
+  }
+]
