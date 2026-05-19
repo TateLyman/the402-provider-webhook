@@ -13,3 +13,5 @@ FIX_SPRINT_URL = "https://tateprograms.com/x402-fix-sprint.html"
 REQUIRE_SIGNATURE = "true"
 # Optional public Base mainnet receive address for Agentic Market-compatible x402.
 # BASE_PAY_TO = "0x..."
+# Private upstream auth for proxy marketplaces that collect payment and forward calls.
+# PROVIDER_PROXY_TOKEN = "set as secret, not plain vars"

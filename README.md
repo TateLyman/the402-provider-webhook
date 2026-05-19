@@ -17,6 +17,9 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
   Solana is opt-in only when `SOLANA_PAY_TO` is deliberately configured.
   Their unpaid `402` responses include machine-readable `x402Version`, `resource`, `accepts`, and Bazaar discovery metadata in both the `Payment-Required` header and JSON body for agent marketplace validators.
   Triage results also include focused attack checks for settlement finality, replay/idempotency, proxy/cache handling, browser payment headers, and discovery-selection risk.
+- `POST https://the402.tateprograms.com/api/provider/triage` and `/api/provider/index-watch` are proxy-marketplace upstream routes.
+  They do not return x402 challenges. Instead, a marketplace such as APIHub can collect buyer payment, inject `X-Tate-Provider-Token`, forward the call, and settle payout through that marketplace.
+  Use these only behind a configured `PROVIDER_PROXY_TOKEN`; public x402 buyers should use the `/api/x402/*` routes.
 
 The webhook verifies:
 
@@ -57,6 +60,23 @@ Optional Solana support is deliberately disabled unless a controlled settlement 
 
 ```bash
 npx wrangler secret put SOLANA_PAY_TO
+```
+
+Set a private upstream token before listing proxy-marketplace routes:
+
+```bash
+npx wrangler secret put PROVIDER_PROXY_TOKEN
+```
+
+For APIHub-style provider dashboards:
+
+```text
+Base URL: https://the402.tateprograms.com
+Endpoint path: /api/provider/triage
+Endpoint path: /api/provider/index-watch
+Method: POST
+Price per request: 10000 microdollars ($0.01)
+Upstream auth header: X-Tate-Provider-Token
 ```
 
 Set the provider webhook URL in the402:

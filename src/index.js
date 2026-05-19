@@ -21,6 +21,8 @@ const USDC_ATOMIC_AMOUNT = "10000";
 const MAX_PAYMENT_TIMEOUT_SECONDS = 300;
 const PAID_TRIAGE_PATH = "/api/x402/triage";
 const INDEX_WATCH_PATH = "/api/x402/index-watch";
+const PROVIDER_PROXY_TRIAGE_PATH = "/api/provider/triage";
+const PROVIDER_PROXY_INDEX_WATCH_PATH = "/api/provider/index-watch";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
 const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
 
@@ -187,6 +189,24 @@ const SERVICE_CATALOG = [
     delivery: "instant",
     url: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
     network: "Base mainnet USDC"
+  },
+  {
+    id: "provider-proxy-triage-api",
+    name: "Provider Proxy Triage API",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${PROVIDER_PROXY_TRIAGE_PATH}`,
+    network: "marketplace-managed",
+    upstream_auth_header: "X-Tate-Provider-Token"
+  },
+  {
+    id: "provider-proxy-index-watch-api",
+    name: "Provider Proxy Index Watch API",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${PROVIDER_PROXY_INDEX_WATCH_PATH}`,
+    network: "marketplace-managed",
+    upstream_auth_header: "X-Tate-Provider-Token"
   }
 ];
 
@@ -438,6 +458,57 @@ function paidEndpointInfo({ name, endpoint, useMethod, description, acceptedFiel
   };
 }
 
+function providerProxyInfo(c, { name, endpoint, useMethod, description, acceptedFields }) {
+  return c.json({
+    ok: true,
+    service: name,
+    paid: true,
+    payment_mode: "marketplace_proxy",
+    price: USDC_PRICE,
+    endpoint,
+    use_method: useMethod,
+    description,
+    accepted_fields: acceptedFields,
+    upstream_auth: {
+      header: "X-Tate-Provider-Token",
+      configured: Boolean(providerProxyToken(c.env))
+    },
+    note: "For proxy marketplaces that collect payment from the buyer and forward the call with a private upstream auth header. Public x402 buyers should use /api/x402/triage or /api/x402/index-watch instead."
+  }, 200, JSON_HEADERS);
+}
+
+function providerProxyToken(env = {}) {
+  return String(env.PROVIDER_PROXY_TOKEN || env.APIHUB_PROXY_TOKEN || "").trim();
+}
+
+function providerProxyAuth(c) {
+  const expected = providerProxyToken(c.env);
+  if (!expected) return { ok: false, status: 503, reason: "provider_proxy_not_configured" };
+
+  const headerToken = String(c.req.header("x-tate-provider-token") || c.req.header("x-apihub-provider-token") || "").trim();
+  const authHeader = String(c.req.header("authorization") || "").trim();
+  const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const actual = headerToken || bearerToken;
+
+  if (!actual) return { ok: false, status: 401, reason: "missing_provider_proxy_token" };
+  if (!timingSafeEqual(actual, expected)) {
+    return { ok: false, status: 401, reason: "invalid_provider_proxy_token" };
+  }
+
+  return { ok: true };
+}
+
+function providerProxyAuthError(auth, origin) {
+  const headers = corsHeaders(origin, "content-type,x-tate-provider-token,authorization");
+  headers.set("content-type", JSON_HEADERS["content-type"]);
+  return new Response(JSON.stringify({ error: auth.reason }, null, 2), {
+    status: auth.status,
+    headers
+  });
+}
+
 app.get("/health", c => c.json({
   ok: true,
   service: "tateprograms-the402-provider",
@@ -508,6 +579,52 @@ app.post(PAID_TRIAGE_PATH, async c => {
 app.post(INDEX_WATCH_PATH, async c => {
   const response = await indexWatchSurface(c.req.raw);
   response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
+  return response;
+});
+
+app.options(PROVIDER_PROXY_TRIAGE_PATH, c => new Response(null, {
+  status: 204,
+  headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,authorization")
+}));
+
+app.options(PROVIDER_PROXY_INDEX_WATCH_PATH, c => new Response(null, {
+  status: 204,
+  headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,authorization")
+}));
+
+app.get(PROVIDER_PROXY_TRIAGE_PATH, c => providerProxyInfo(c, {
+  name: "Provider Proxy Triage API",
+  endpoint: `https://the402.tateprograms.com${PROVIDER_PROXY_TRIAGE_PATH}`,
+  useMethod: "POST",
+  description: "Marketplace-proxy upstream for public x402 launch triage. Requires X-Tate-Provider-Token.",
+  acceptedFields: ["url", "method", "origin"]
+}));
+
+app.get(PROVIDER_PROXY_INDEX_WATCH_PATH, c => providerProxyInfo(c, {
+  name: "Provider Proxy Index Watch API",
+  endpoint: `https://the402.tateprograms.com${PROVIDER_PROXY_INDEX_WATCH_PATH}`,
+  useMethod: "POST",
+  description: "Marketplace-proxy upstream for 402 Index provider health watch. Requires X-Tate-Provider-Token.",
+  acceptedFields: ["q", "provider", "domain", "url", "protocol", "health", "limit"]
+}));
+
+app.post(PROVIDER_PROXY_TRIAGE_PATH, async c => {
+  const auth = providerProxyAuth(c);
+  if (!auth.ok) return providerProxyAuthError(auth, c.req.header("origin"));
+
+  const response = await triageSurface(c.req.raw);
+  response.headers.set("x-tate-programs-paid-endpoint", "provider-proxy");
+  applyCors(response.headers, c.req.header("origin"));
+  return response;
+});
+
+app.post(PROVIDER_PROXY_INDEX_WATCH_PATH, async c => {
+  const auth = providerProxyAuth(c);
+  if (!auth.ok) return providerProxyAuthError(auth, c.req.header("origin"));
+
+  const response = await indexWatchSurface(c.req.raw);
+  response.headers.set("x-tate-programs-paid-endpoint", "provider-proxy");
+  applyCors(response.headers, c.req.header("origin"));
   return response;
 });
 
@@ -1192,10 +1309,10 @@ function timingSafeEqual(a, b) {
   return result === 0;
 }
 
-function corsHeaders(origin) {
+function corsHeaders(origin, allowHeaders = "content-type,x-payment,payment-signature") {
   const headers = new Headers({
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type,x-payment,payment-signature",
+    "access-control-allow-headers": allowHeaders,
     "access-control-expose-headers": "payment-required,x-payment-response",
     "access-control-max-age": "600",
     "cache-control": "no-store"
