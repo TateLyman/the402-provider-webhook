@@ -11,11 +11,11 @@ const JSON_HEADERS = {
 };
 
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
-const SOLANA_PAY_TO = "2Zfwj9JCmNfkhNxXKouHFMBq4Hb2h3zAa6Togyf8wQev";
 const SOLANA_USDC_ASSET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SOLANA_FEE_PAYER = "2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4";
 const BASE_MAINNET = "eip155:8453";
 const BASE_USDC_ASSET = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const DEFAULT_BASE_PAY_TO = "0x7bc5e304ca289823dec021012d6bb361ddf6b368";
 const USDC_PRICE = "$0.01";
 const USDC_ATOMIC_AMOUNT = "10000";
 const MAX_PAYMENT_TIMEOUT_SECONDS = 300;
@@ -178,7 +178,7 @@ const SERVICE_CATALOG = [
     price_usd: 0.01,
     delivery: "instant",
     url: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
-    network: "Solana mainnet USDC; Base mainnet USDC when BASE_PAY_TO is configured"
+    network: "Base mainnet USDC"
   },
   {
     id: "x402-index-watch-api",
@@ -186,7 +186,7 @@ const SERVICE_CATALOG = [
     price_usd: 0.01,
     delivery: "instant",
     url: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
-    network: "Solana mainnet USDC; Base mainnet USDC when BASE_PAY_TO is configured"
+    network: "Base mainnet USDC"
   }
 ];
 
@@ -195,8 +195,8 @@ let paidTriageMiddleware;
 let paidTriageMiddlewareKey;
 
 function getPaidTriageMiddleware(env = {}) {
-  const basePayTo = normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || "");
-  const middlewareKey = basePayTo || "solana-only";
+  const paymentTargets = paymentTargetsFromEnv(env);
+  const middlewareKey = `${paymentTargets.basePayTo}|${paymentTargets.solanaPayTo || "no-solana"}`;
 
   if (!paidTriageMiddleware || paidTriageMiddlewareKey !== middlewareKey) {
     const facilitator = new HTTPFacilitatorClient({ url: PAYAI_FACILITATOR_URL });
@@ -209,7 +209,7 @@ function getPaidTriageMiddleware(env = {}) {
       description: "Paid no-payment triage for public x402, MPP, Pay.sh, and agent-payment launch surfaces.",
       discovery: TRIAGE_DISCOVERY,
       scope: "Submit a public HTTPS endpoint or manifest. No payment header, wallet signature, private endpoint guessing, or paid upstream call is attempted.",
-      basePayTo
+      paymentTargets
     });
     const indexWatchConfig = () => buildPaidRouteConfig({
       service: "x402-index-watch",
@@ -218,7 +218,7 @@ function getPaidTriageMiddleware(env = {}) {
       description: "Paid 402 Index health watch for provider, domain, or service search terms.",
       discovery: INDEX_WATCH_DISCOVERY,
       scope: "Submit a provider, domain, or service query. Returns public 402 Index health and launch-readiness signals.",
-      basePayTo
+      paymentTargets
     });
 
     paidTriageMiddleware = paymentMiddlewareFromConfig(
@@ -229,7 +229,7 @@ function getPaidTriageMiddleware(env = {}) {
         [`POST ${INDEX_WATCH_PATH}`]: indexWatchConfig()
       },
       facilitator,
-      buildSchemes(basePayTo),
+      buildSchemes(paymentTargets),
       { appName: "Tate Programs", testnet: false }
     );
     paidTriageMiddlewareKey = middlewareKey;
@@ -238,12 +238,12 @@ function getPaidTriageMiddleware(env = {}) {
   return paidTriageMiddleware;
 }
 
-function buildPaidRouteConfig({ service, displayName, resource, description, discovery, scope, basePayTo }) {
+function buildPaidRouteConfig({ service, displayName, resource, description, discovery, scope, paymentTargets }) {
   return {
     accepts: buildAccepts({
       service,
       resource,
-      basePayTo
+      paymentTargets
     }),
     resource,
     description,
@@ -260,13 +260,13 @@ function buildPaidRouteConfig({ service, displayName, resource, description, dis
         description,
         discovery,
         scope,
-        basePayTo
+        paymentTargets
       })
     })
   };
 }
 
-function buildAccepts({ service, resource, basePayTo }) {
+function buildAccepts({ service, resource, paymentTargets }) {
   const commonExtra = {
     provider: "Tate Programs",
     category: "agent-payments",
@@ -275,28 +275,30 @@ function buildAccepts({ service, resource, basePayTo }) {
   };
   const accepts = [];
 
-  if (basePayTo) {
+  if (paymentTargets.basePayTo) {
     accepts.push({
       scheme: "exact",
       price: "$0.01",
       network: BASE_MAINNET,
-      payTo: basePayTo,
+      payTo: paymentTargets.basePayTo,
       extra: commonExtra
     });
   }
 
-  accepts.push({
-    scheme: "exact",
-    price: "$0.01",
-    network: SOLANA_MAINNET,
-    payTo: SOLANA_PAY_TO,
-    extra: commonExtra
-  });
+  if (paymentTargets.solanaPayTo) {
+    accepts.push({
+      scheme: "exact",
+      price: "$0.01",
+      network: SOLANA_MAINNET,
+      payTo: paymentTargets.solanaPayTo,
+      extra: commonExtra
+    });
+  }
 
   return accepts;
 }
 
-function buildPaymentRequiredBody({ service, displayName, resource, description, discovery, scope, basePayTo }) {
+function buildPaymentRequiredBody({ service, displayName, resource, description, discovery, scope, paymentTargets }) {
   return {
     x402Version: 2,
     error: "Payment required",
@@ -308,17 +310,17 @@ function buildPaymentRequiredBody({ service, displayName, resource, description,
       description,
       mimeType: "application/json"
     },
-    accepts: buildAtomicAccepts({ service, resource, basePayTo }),
+    accepts: buildAtomicAccepts({ service, resource, paymentTargets }),
     extensions: {
       ...discovery
     },
-    networks: describePaidNetworks(basePayTo),
-    payTo: describePayTo(basePayTo),
+    networks: describePaidNetworks(paymentTargets),
+    payTo: describePayTo(paymentTargets),
     scope
   };
 }
 
-function buildAtomicAccepts({ service, resource, basePayTo }) {
+function buildAtomicAccepts({ service, resource, paymentTargets }) {
   const commonExtra = {
     provider: "Tate Programs",
     category: "agent-payments",
@@ -327,13 +329,13 @@ function buildAtomicAccepts({ service, resource, basePayTo }) {
   };
   const accepts = [];
 
-  if (basePayTo) {
+  if (paymentTargets.basePayTo) {
     accepts.push({
       scheme: "exact",
       network: BASE_MAINNET,
       amount: USDC_ATOMIC_AMOUNT,
       asset: BASE_USDC_ASSET,
-      payTo: basePayTo,
+      payTo: paymentTargets.basePayTo,
       maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
       extra: {
         name: "USD Coin",
@@ -343,30 +345,43 @@ function buildAtomicAccepts({ service, resource, basePayTo }) {
     });
   }
 
-  accepts.push({
-    scheme: "exact",
-    network: SOLANA_MAINNET,
-    amount: USDC_ATOMIC_AMOUNT,
-    asset: SOLANA_USDC_ASSET,
-    payTo: SOLANA_PAY_TO,
-    maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
-    extra: {
-      ...commonExtra,
-      feePayer: SOLANA_FEE_PAYER
-    }
-  });
+  if (paymentTargets.solanaPayTo) {
+    accepts.push({
+      scheme: "exact",
+      network: SOLANA_MAINNET,
+      amount: USDC_ATOMIC_AMOUNT,
+      asset: SOLANA_USDC_ASSET,
+      payTo: paymentTargets.solanaPayTo,
+      maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
+      extra: {
+        ...commonExtra,
+        feePayer: SOLANA_FEE_PAYER
+      }
+    });
+  }
 
   return accepts;
 }
 
-function buildSchemes(basePayTo) {
-  const schemes = [{ network: "solana:*", server: new ExactSvmScheme() }];
+function buildSchemes(paymentTargets) {
+  const schemes = [];
 
-  if (basePayTo) {
-    schemes.unshift({ network: BASE_MAINNET, server: new ExactEvmScheme() });
+  if (paymentTargets.basePayTo) {
+    schemes.push({ network: BASE_MAINNET, server: new ExactEvmScheme() });
+  }
+
+  if (paymentTargets.solanaPayTo) {
+    schemes.push({ network: "solana:*", server: new ExactSvmScheme() });
   }
 
   return schemes;
+}
+
+function paymentTargetsFromEnv(env = {}) {
+  return {
+    basePayTo: normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || DEFAULT_BASE_PAY_TO),
+    solanaPayTo: normalizeSolanaAddress(env.SOLANA_PAY_TO || env.SOLANA_USDC_PAY_TO || "")
+  };
 }
 
 function normalizeEvmAddress(value) {
@@ -374,14 +389,23 @@ function normalizeEvmAddress(value) {
   return /^0x[a-fA-F0-9]{40}$/.test(address) ? address : "";
 }
 
-function describePaidNetworks(basePayTo) {
-  return basePayTo ? [BASE_MAINNET, SOLANA_MAINNET] : [SOLANA_MAINNET];
+function normalizeSolanaAddress(value) {
+  const address = String(value || "").trim();
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) ? address : "";
 }
 
-function describePayTo(basePayTo) {
-  return basePayTo
-    ? { [BASE_MAINNET]: basePayTo, [SOLANA_MAINNET]: SOLANA_PAY_TO }
-    : { [SOLANA_MAINNET]: SOLANA_PAY_TO };
+function describePaidNetworks(paymentTargets) {
+  return [
+    paymentTargets.basePayTo ? BASE_MAINNET : null,
+    paymentTargets.solanaPayTo ? SOLANA_MAINNET : null
+  ].filter(Boolean);
+}
+
+function describePayTo(paymentTargets) {
+  return Object.fromEntries([
+    paymentTargets.basePayTo ? [BASE_MAINNET, paymentTargets.basePayTo] : null,
+    paymentTargets.solanaPayTo ? [SOLANA_MAINNET, paymentTargets.solanaPayTo] : null
+  ].filter(Boolean));
 }
 
 function paidServiceWithEnv(service, env = {}) {
@@ -389,16 +413,16 @@ function paidServiceWithEnv(service, env = {}) {
     return service;
   }
 
-  const basePayTo = normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || "");
+  const paymentTargets = paymentTargetsFromEnv(env);
   return {
     ...service,
-    networks: describePaidNetworks(basePayTo),
-    payTo: describePayTo(basePayTo),
-    network: basePayTo ? "Base mainnet USDC + Solana mainnet USDC" : "Solana mainnet USDC"
+    networks: describePaidNetworks(paymentTargets),
+    payTo: describePayTo(paymentTargets),
+    network: paymentTargets.solanaPayTo ? "Base mainnet USDC + Solana mainnet USDC" : "Base mainnet USDC"
   };
 }
 
-function paidEndpointInfo({ name, endpoint, useMethod, description, acceptedFields, basePayTo }) {
+function paidEndpointInfo({ name, endpoint, useMethod, description, acceptedFields, paymentTargets }) {
   return {
     ok: true,
     service: name,
@@ -408,8 +432,8 @@ function paidEndpointInfo({ name, endpoint, useMethod, description, acceptedFiel
     use_method: useMethod,
     description,
     accepted_fields: acceptedFields,
-    networks: describePaidNetworks(basePayTo),
-    payTo: describePayTo(basePayTo),
+    networks: describePaidNetworks(paymentTargets),
+    payTo: describePayTo(paymentTargets),
     note: "This GET response is only returned after x402 payment; normal API execution uses the listed method."
   };
 }
@@ -463,7 +487,7 @@ app.get(PAID_TRIAGE_PATH, c => c.json(paidEndpointInfo({
   useMethod: "POST",
   description: "Submit a public HTTPS endpoint or manifest for a no-payment external x402 readiness pass.",
   acceptedFields: ["url", "method", "origin"],
-  basePayTo: normalizeEvmAddress(c.env.BASE_PAY_TO || c.env.BASE_USDC_PAY_TO || "")
+  paymentTargets: paymentTargetsFromEnv(c.env)
 }), 200, JSON_HEADERS));
 
 app.get(INDEX_WATCH_PATH, c => c.json(paidEndpointInfo({
@@ -472,18 +496,18 @@ app.get(INDEX_WATCH_PATH, c => c.json(paidEndpointInfo({
   useMethod: "POST",
   description: "Submit a provider, domain, or service query for public 402 Index health and launch-readiness signals.",
   acceptedFields: ["q", "provider", "domain", "url", "protocol", "health", "limit"],
-  basePayTo: normalizeEvmAddress(c.env.BASE_PAY_TO || c.env.BASE_USDC_PAY_TO || "")
+  paymentTargets: paymentTargetsFromEnv(c.env)
 }), 200, JSON_HEADERS));
 
 app.post(PAID_TRIAGE_PATH, async c => {
   const response = await triageSurface(c.req.raw);
-  response.headers.set("x-tate-programs-paid-endpoint", "x402-multirail");
+  response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
   return response;
 });
 
 app.post(INDEX_WATCH_PATH, async c => {
   const response = await indexWatchSurface(c.req.raw);
-  response.headers.set("x-tate-programs-paid-endpoint", "x402-multirail");
+  response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
   return response;
 });
 
@@ -658,7 +682,7 @@ async function indexWatchSurface(request) {
 }
 
 function agentCard(env) {
-  const basePayTo = normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || "");
+  const paymentTargets = paymentTargetsFromEnv(env);
 
   return {
     name: "Tate Programs x402 Launch Triage",
@@ -698,8 +722,8 @@ function agentCard(env) {
         url: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
         method: "POST",
         price: "$0.01",
-        network: describePaidNetworks(basePayTo),
-        payTo: describePayTo(basePayTo),
+        network: describePaidNetworks(paymentTargets),
+        payTo: describePayTo(paymentTargets),
         input_schema: {
           type: "object",
           required: ["url"],
@@ -725,8 +749,8 @@ function agentCard(env) {
         url: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
         method: "POST",
         price: "$0.01",
-        network: describePaidNetworks(basePayTo),
-        payTo: describePayTo(basePayTo),
+        network: describePaidNetworks(paymentTargets),
+        payTo: describePayTo(paymentTargets),
         input_schema: {
           type: "object",
           required: ["q"],

@@ -13,7 +13,8 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
 - `GET https://the402.tateprograms.com/health` returns a no-store health check.
 - `POST https://the402.tateprograms.com/webhook/the402` receives provider events from the402.
 - `POST https://the402.tateprograms.com/api/x402/triage` and `/api/x402/index-watch` are paid x402 APIs.
-  They always advertise Solana mainnet USDC and add a Base mainnet USDC accept leg when `BASE_PAY_TO` is configured.
+  They advertise Base mainnet USDC to the known Tate Programs receive address by default.
+  Solana is opt-in only when `SOLANA_PAY_TO` is deliberately configured.
   Their unpaid `402` responses include machine-readable `x402Version`, `resource`, `accepts`, and Bazaar discovery metadata in both the `Payment-Required` header and JSON body for agent marketplace validators.
   Triage results also include focused attack checks for settlement finality, replay/idempotency, proxy/cache handling, browser payment headers, and discovery-selection risk.
 
@@ -50,6 +51,12 @@ Set a public Base receive address when we want Agentic Market / Base-first x402 
 
 ```bash
 npx wrangler secret put BASE_PAY_TO
+```
+
+Optional Solana support is deliberately disabled unless a controlled settlement wallet is configured:
+
+```bash
+npx wrangler secret put SOLANA_PAY_TO
 ```
 
 Set the provider webhook URL in the402:
