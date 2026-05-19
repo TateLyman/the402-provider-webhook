@@ -12,7 +12,13 @@ const JSON_HEADERS = {
 
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 const SOLANA_PAY_TO = "2Zfwj9JCmNfkhNxXKouHFMBq4Hb2h3zAa6Togyf8wQev";
+const SOLANA_USDC_ASSET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOLANA_FEE_PAYER = "2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4";
 const BASE_MAINNET = "eip155:8453";
+const BASE_USDC_ASSET = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const USDC_PRICE = "$0.01";
+const USDC_ATOMIC_AMOUNT = "10000";
+const MAX_PAYMENT_TIMEOUT_SECONDS = 300;
 const PAID_TRIAGE_PATH = "/api/x402/triage";
 const INDEX_WATCH_PATH = "/api/x402/index-watch";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
@@ -186,57 +192,31 @@ function getPaidTriageMiddleware(env = {}) {
     const facilitator = new HTTPFacilitatorClient({ url: PAYAI_FACILITATOR_URL });
     const triageResource = `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`;
     const indexWatchResource = `https://the402.tateprograms.com${INDEX_WATCH_PATH}`;
+    const triageConfig = () => buildPaidRouteConfig({
+      service: "x402-paid-triage",
+      displayName: "x402 Paid Triage API",
+      resource: triageResource,
+      description: "Paid no-payment triage for public x402, MPP, Pay.sh, and agent-payment launch surfaces.",
+      discovery: TRIAGE_DISCOVERY,
+      scope: "Submit a public HTTPS endpoint or manifest. No payment header, wallet signature, private endpoint guessing, or paid upstream call is attempted.",
+      basePayTo
+    });
+    const indexWatchConfig = () => buildPaidRouteConfig({
+      service: "x402-index-watch",
+      displayName: "x402 Index Watch API",
+      resource: indexWatchResource,
+      description: "Paid 402 Index health watch for provider, domain, or service search terms.",
+      discovery: INDEX_WATCH_DISCOVERY,
+      scope: "Submit a provider, domain, or service query. Returns public 402 Index health and launch-readiness signals.",
+      basePayTo
+    });
 
     paidTriageMiddleware = paymentMiddlewareFromConfig(
       {
-        [`POST ${PAID_TRIAGE_PATH}`]: {
-          accepts: buildAccepts({
-            service: "x402-public-triage",
-            resource: triageResource,
-            basePayTo
-          }),
-          resource: triageResource,
-          description: "Paid no-payment triage for public x402, MPP, Pay.sh, and agent-payment launch surfaces.",
-          mimeType: "application/json",
-          extensions: {
-            ...TRIAGE_DISCOVERY
-          },
-          unpaidResponseBody: () => ({
-            contentType: "application/json",
-            body: {
-              error: "payment_required",
-              service: "x402 Public Triage API",
-              price: "$0.01",
-              networks: describePaidNetworks(basePayTo),
-              payTo: describePayTo(basePayTo),
-              scope: "Submit a public HTTPS endpoint or manifest. No payment header, wallet signature, private endpoint guessing, or paid upstream call is attempted."
-            }
-          })
-        },
-        [`POST ${INDEX_WATCH_PATH}`]: {
-          accepts: buildAccepts({
-            service: "x402-index-watch",
-            resource: indexWatchResource,
-            basePayTo
-          }),
-          resource: indexWatchResource,
-          description: "Paid 402 Index health watch for provider, domain, or service search terms.",
-          mimeType: "application/json",
-          extensions: {
-            ...INDEX_WATCH_DISCOVERY
-          },
-          unpaidResponseBody: () => ({
-            contentType: "application/json",
-            body: {
-              error: "payment_required",
-              service: "x402 Index Watch API",
-              price: "$0.01",
-              networks: describePaidNetworks(basePayTo),
-              payTo: describePayTo(basePayTo),
-              scope: "Submit a provider, domain, or service query. Returns public 402 Index health and launch-readiness signals."
-            }
-          })
-        }
+        [`GET ${PAID_TRIAGE_PATH}`]: triageConfig(),
+        [`POST ${PAID_TRIAGE_PATH}`]: triageConfig(),
+        [`GET ${INDEX_WATCH_PATH}`]: indexWatchConfig(),
+        [`POST ${INDEX_WATCH_PATH}`]: indexWatchConfig()
       },
       facilitator,
       buildSchemes(basePayTo),
@@ -246,6 +226,34 @@ function getPaidTriageMiddleware(env = {}) {
   }
 
   return paidTriageMiddleware;
+}
+
+function buildPaidRouteConfig({ service, displayName, resource, description, discovery, scope, basePayTo }) {
+  return {
+    accepts: buildAccepts({
+      service,
+      resource,
+      basePayTo
+    }),
+    resource,
+    description,
+    mimeType: "application/json",
+    extensions: {
+      ...discovery
+    },
+    unpaidResponseBody: () => ({
+      contentType: "application/json",
+      body: buildPaymentRequiredBody({
+        service,
+        displayName,
+        resource,
+        description,
+        discovery,
+        scope,
+        basePayTo
+      })
+    })
+  };
 }
 
 function buildAccepts({ service, resource, basePayTo }) {
@@ -273,6 +281,69 @@ function buildAccepts({ service, resource, basePayTo }) {
     network: SOLANA_MAINNET,
     payTo: SOLANA_PAY_TO,
     extra: commonExtra
+  });
+
+  return accepts;
+}
+
+function buildPaymentRequiredBody({ service, displayName, resource, description, discovery, scope, basePayTo }) {
+  return {
+    x402Version: 2,
+    error: "Payment required",
+    code: "payment_required",
+    service: displayName,
+    price: USDC_PRICE,
+    resource: {
+      url: resource,
+      description,
+      mimeType: "application/json"
+    },
+    accepts: buildAtomicAccepts({ service, resource, basePayTo }),
+    extensions: {
+      ...discovery
+    },
+    networks: describePaidNetworks(basePayTo),
+    payTo: describePayTo(basePayTo),
+    scope
+  };
+}
+
+function buildAtomicAccepts({ service, resource, basePayTo }) {
+  const commonExtra = {
+    provider: "Tate Programs",
+    category: "agent-payments",
+    service,
+    resource
+  };
+  const accepts = [];
+
+  if (basePayTo) {
+    accepts.push({
+      scheme: "exact",
+      network: BASE_MAINNET,
+      amount: USDC_ATOMIC_AMOUNT,
+      asset: BASE_USDC_ASSET,
+      payTo: basePayTo,
+      maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
+      extra: {
+        name: "USD Coin",
+        version: "2",
+        ...commonExtra
+      }
+    });
+  }
+
+  accepts.push({
+    scheme: "exact",
+    network: SOLANA_MAINNET,
+    amount: USDC_ATOMIC_AMOUNT,
+    asset: SOLANA_USDC_ASSET,
+    payTo: SOLANA_PAY_TO,
+    maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
+    extra: {
+      ...commonExtra,
+      feePayer: SOLANA_FEE_PAYER
+    }
   });
 
   return accepts;
@@ -314,6 +385,22 @@ function paidServiceWithEnv(service, env = {}) {
     networks: describePaidNetworks(basePayTo),
     payTo: describePayTo(basePayTo),
     network: basePayTo ? "Base mainnet USDC + Solana mainnet USDC" : "Solana mainnet USDC"
+  };
+}
+
+function paidEndpointInfo({ name, endpoint, useMethod, description, acceptedFields, basePayTo }) {
+  return {
+    ok: true,
+    service: name,
+    paid: true,
+    price: USDC_PRICE,
+    endpoint,
+    use_method: useMethod,
+    description,
+    accepted_fields: acceptedFields,
+    networks: describePaidNetworks(basePayTo),
+    payTo: describePayTo(basePayTo),
+    note: "This GET response is only returned after x402 payment; normal API execution uses the listed method."
   };
 }
 
@@ -359,6 +446,24 @@ async function paidRouteGuard(c, next) {
 
 app.use(PAID_TRIAGE_PATH, paidRouteGuard);
 app.use(INDEX_WATCH_PATH, paidRouteGuard);
+
+app.get(PAID_TRIAGE_PATH, c => c.json(paidEndpointInfo({
+  name: "x402 Paid Triage API",
+  endpoint: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
+  useMethod: "POST",
+  description: "Submit a public HTTPS endpoint or manifest for a no-payment external x402 readiness pass.",
+  acceptedFields: ["url", "method", "origin"],
+  basePayTo: normalizeEvmAddress(c.env.BASE_PAY_TO || c.env.BASE_USDC_PAY_TO || "")
+}), 200, JSON_HEADERS));
+
+app.get(INDEX_WATCH_PATH, c => c.json(paidEndpointInfo({
+  name: "x402 Index Watch API",
+  endpoint: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
+  useMethod: "POST",
+  description: "Submit a provider, domain, or service query for public 402 Index health and launch-readiness signals.",
+  acceptedFields: ["q", "provider", "domain", "url", "protocol", "health", "limit"],
+  basePayTo: normalizeEvmAddress(c.env.BASE_PAY_TO || c.env.BASE_USDC_PAY_TO || "")
+}), 200, JSON_HEADERS));
 
 app.post(PAID_TRIAGE_PATH, async c => {
   const response = await triageSurface(c.req.raw);
@@ -967,7 +1072,7 @@ function timingSafeEqual(a, b) {
 
 function corsHeaders(origin) {
   const headers = new Headers({
-    "access-control-allow-methods": "POST,OPTIONS",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type,x-payment,payment-signature",
     "access-control-expose-headers": "payment-required,x-payment-response",
     "access-control-max-age": "600",
