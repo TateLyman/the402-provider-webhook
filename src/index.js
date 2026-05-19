@@ -459,6 +459,17 @@ function paidEndpointInfo({ name, endpoint, useMethod, description, acceptedFiel
 }
 
 function providerProxyInfo(c, { name, endpoint, useMethod, description, acceptedFields }) {
+  const challenge = String(c.req.query("challenge") || "").trim();
+  if (challenge) {
+    return new Response(challenge, {
+      status: 200,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store"
+      }
+    });
+  }
+
   return c.json({
     ok: true,
     service: name,
@@ -481,10 +492,8 @@ function providerProxyToken(env = {}) {
   return String(env.PROVIDER_PROXY_TOKEN || env.APIHUB_PROXY_TOKEN || "").trim();
 }
 
-function providerProxyAuth(c) {
+async function providerProxyAuth(c, body = "") {
   const expected = providerProxyToken(c.env);
-  if (!expected) return { ok: false, status: 503, reason: "provider_proxy_not_configured" };
-
   const headerToken = String(c.req.header("x-tate-provider-token") || c.req.header("x-apihub-provider-token") || "").trim();
   const authHeader = String(c.req.header("authorization") || "").trim();
   const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
@@ -492,16 +501,100 @@ function providerProxyAuth(c) {
     : "";
   const actual = headerToken || bearerToken;
 
-  if (!actual) return { ok: false, status: 401, reason: "missing_provider_proxy_token" };
-  if (!timingSafeEqual(actual, expected)) {
+  if (actual && !expected) return { ok: false, status: 503, reason: "provider_proxy_not_configured" };
+  if (actual && !timingSafeEqual(actual, expected)) {
     return { ok: false, status: 401, reason: "invalid_provider_proxy_token" };
   }
+  if (actual) return { ok: true, mode: "provider_proxy" };
 
-  return { ok: true };
+  const agentMintSignature = String(c.req.header("x-agentmint-signature") || "").trim();
+  if (agentMintSignature) {
+    return verifyAgentMintProxyRequest(c, body, agentMintSignature);
+  }
+
+  return { ok: false, status: 401, reason: "missing_provider_proxy_token" };
+}
+
+async function verifyAgentMintProxyRequest(c, body, signature) {
+  const secrets = agentMintWebhookSecrets(c);
+  if (!secrets.length) return { ok: false, status: 503, reason: "agentmint_webhook_secret_not_configured" };
+
+  const actual = signature.startsWith("sha256=") ? signature : `sha256=${signature}`;
+  for (const secret of secrets) {
+    const expected = await hmacSha256(body, secret);
+    if (timingSafeEqual(actual, expected)) {
+      return { ok: true, mode: "agentmint" };
+    }
+  }
+
+  return { ok: false, status: 401, reason: "invalid_agentmint_signature" };
+}
+
+function agentMintWebhookSecrets(c) {
+  const env = c.env || {};
+  const path = new URL(c.req.url).pathname;
+  const pathSpecific = path === PROVIDER_PROXY_INDEX_WATCH_PATH
+    ? env.AGENTMINT_INDEX_WATCH_WEBHOOK_SECRET
+    : env.AGENTMINT_TRIAGE_WEBHOOK_SECRET;
+
+  const all = [
+    pathSpecific,
+    env.AGENTMINT_WEBHOOK_SECRET,
+    env.AGENTMINT_WEBHOOK_SECRETS
+  ];
+
+  return all
+    .flatMap(value => String(value || "").split(","))
+    .map(value => value.trim())
+    .filter(Boolean);
+}
+
+function providerProxyRequest(c, body, auth) {
+  let payloadText = body;
+
+  if (auth.mode === "agentmint") {
+    try {
+      const parsed = JSON.parse(body || "{}");
+      const input = parsed && typeof parsed === "object" && parsed.input && typeof parsed.input === "object"
+        ? parsed.input
+        : parsed;
+      payloadText = JSON.stringify(input || {});
+    } catch {
+      payloadText = body;
+    }
+  }
+
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete("content-length");
+
+  return new Request(c.req.raw.url, {
+    method: c.req.method,
+    headers,
+    body: payloadText
+  });
+}
+
+async function providerProxyResult(response, c, auth, service) {
+  response.headers.set("x-tate-programs-paid-endpoint", auth.mode === "agentmint" ? "agentmint-webhook" : "provider-proxy");
+  applyCors(response.headers, c.req.header("origin"));
+
+  if (auth.mode !== "agentmint") return response;
+
+  const contentType = response.headers.get("content-type") || "";
+  const output = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+
+  return json({
+    output,
+    service,
+    delivered_by: "Tate Programs",
+    mode: "agentmint_webhook"
+  }, { status: response.status });
 }
 
 function providerProxyAuthError(auth, origin) {
-  const headers = corsHeaders(origin, "content-type,x-tate-provider-token,authorization");
+  const headers = corsHeaders(origin, "content-type,x-tate-provider-token,x-apihub-provider-token,x-agentmint-signature,authorization");
   headers.set("content-type", JSON_HEADERS["content-type"]);
   return new Response(JSON.stringify({ error: auth.reason }, null, 2), {
     status: auth.status,
@@ -584,12 +677,12 @@ app.post(INDEX_WATCH_PATH, async c => {
 
 app.options(PROVIDER_PROXY_TRIAGE_PATH, c => new Response(null, {
   status: 204,
-  headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,authorization")
+  headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,x-apihub-provider-token,x-agentmint-signature,authorization")
 }));
 
 app.options(PROVIDER_PROXY_INDEX_WATCH_PATH, c => new Response(null, {
   status: 204,
-  headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,authorization")
+  headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,x-apihub-provider-token,x-agentmint-signature,authorization")
 }));
 
 app.get(PROVIDER_PROXY_TRIAGE_PATH, c => providerProxyInfo(c, {
@@ -609,23 +702,23 @@ app.get(PROVIDER_PROXY_INDEX_WATCH_PATH, c => providerProxyInfo(c, {
 }));
 
 app.post(PROVIDER_PROXY_TRIAGE_PATH, async c => {
-  const auth = providerProxyAuth(c);
+  const body = await c.req.raw.text();
+  const auth = await providerProxyAuth(c, body);
   if (!auth.ok) return providerProxyAuthError(auth, c.req.header("origin"));
 
-  const response = await triageSurface(c.req.raw);
-  response.headers.set("x-tate-programs-paid-endpoint", "provider-proxy");
-  applyCors(response.headers, c.req.header("origin"));
-  return response;
+  const request = providerProxyRequest(c, body, auth);
+  const response = await triageSurface(request);
+  return providerProxyResult(response, c, auth, "x402_launch_triage");
 });
 
 app.post(PROVIDER_PROXY_INDEX_WATCH_PATH, async c => {
-  const auth = providerProxyAuth(c);
+  const body = await c.req.raw.text();
+  const auth = await providerProxyAuth(c, body);
   if (!auth.ok) return providerProxyAuthError(auth, c.req.header("origin"));
 
-  const response = await indexWatchSurface(c.req.raw);
-  response.headers.set("x-tate-programs-paid-endpoint", "provider-proxy");
-  applyCors(response.headers, c.req.header("origin"));
-  return response;
+  const request = providerProxyRequest(c, body, auth);
+  const response = await indexWatchSurface(request);
+  return providerProxyResult(response, c, auth, "x402_index_watch");
 });
 
 app.post("/webhook/the402", c => handleWebhook(c.req.raw, c.env, c.executionCtx));
