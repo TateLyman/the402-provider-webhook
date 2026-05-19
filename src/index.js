@@ -23,6 +23,7 @@ const PAID_TRIAGE_PATH = "/api/x402/triage";
 const INDEX_WATCH_PATH = "/api/x402/index-watch";
 const PROVIDER_PROXY_TRIAGE_PATH = "/api/provider/triage";
 const PROVIDER_PROXY_INDEX_WATCH_PATH = "/api/provider/index-watch";
+const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
 const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
 
@@ -145,6 +146,46 @@ const INDEX_WATCH_DISCOVERY = declareDiscoveryExtension({
   }
 });
 
+const SKILL_TRUST_DISCOVERY = declareDiscoveryExtension({
+  input: {
+    url: "https://github.com/example/agent-skill",
+    format: "repo-or-skill-md"
+  },
+  inputSchema: {
+    properties: {
+      url: {
+        type: "string",
+        format: "uri",
+        description: "Public HTTPS GitHub repo, raw SKILL.md, README, manifest, or skill listing to inspect."
+      },
+      text: {
+        type: "string",
+        description: "Optional pasted skill text. Used only when no URL is supplied."
+      }
+    },
+    required: ["url"]
+  },
+  bodyType: "json",
+  output: {
+    example: {
+      ok: true,
+      risk_score: 78,
+      verdict: "review_before_install",
+      findings: [
+        {
+          severity: "medium",
+          category: "execution",
+          note: "Skill references shell execution without a clear permission boundary."
+        }
+      ],
+      patch_order: [
+        "Declare required permissions before installation.",
+        "Replace broad shell examples with exact commands and dry-run output."
+      ]
+    }
+  }
+});
+
 const SERVICE_CATALOG = [
   {
     id: "x402-launch-recheck",
@@ -205,6 +246,15 @@ const SERVICE_CATALOG = [
     price_usd: 0.01,
     delivery: "instant",
     url: `https://the402.tateprograms.com${PROVIDER_PROXY_INDEX_WATCH_PATH}`,
+    network: "marketplace-managed",
+    upstream_auth_header: "X-Tate-Provider-Token"
+  },
+  {
+    id: "provider-proxy-skill-trust-api",
+    name: "Agent Skill Trust Check API",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${PROVIDER_PROXY_SKILL_TRUST_PATH}`,
     network: "marketplace-managed",
     upstream_auth_header: "X-Tate-Provider-Token"
   }
@@ -535,7 +585,9 @@ function agentMintWebhookSecrets(c) {
   const path = new URL(c.req.url).pathname;
   const pathSpecific = path === PROVIDER_PROXY_INDEX_WATCH_PATH
     ? env.AGENTMINT_INDEX_WATCH_WEBHOOK_SECRET
-    : env.AGENTMINT_TRIAGE_WEBHOOK_SECRET;
+    : path === PROVIDER_PROXY_SKILL_TRUST_PATH
+      ? env.AGENTMINT_SKILL_TRUST_WEBHOOK_SECRET
+      : env.AGENTMINT_TRIAGE_WEBHOOK_SECRET;
 
   const all = [
     pathSpecific,
@@ -608,7 +660,8 @@ app.get("/health", c => c.json({
   brand: c.env.BRAND_NAME || "Tate Programs",
   paid_endpoints: [
     `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
-    `https://the402.tateprograms.com${INDEX_WATCH_PATH}`
+    `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
+    `https://the402.tateprograms.com${PROVIDER_PROXY_SKILL_TRUST_PATH}`
   ]
 }, 200, JSON_HEADERS));
 
@@ -685,6 +738,11 @@ app.options(PROVIDER_PROXY_INDEX_WATCH_PATH, c => new Response(null, {
   headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,x-apihub-provider-token,x-agentmint-signature,authorization")
 }));
 
+app.options(PROVIDER_PROXY_SKILL_TRUST_PATH, c => new Response(null, {
+  status: 204,
+  headers: corsHeaders(c.req.header("origin"), "content-type,x-tate-provider-token,x-apihub-provider-token,x-agentmint-signature,authorization")
+}));
+
 app.get(PROVIDER_PROXY_TRIAGE_PATH, c => providerProxyInfo(c, {
   name: "Provider Proxy Triage API",
   endpoint: `https://the402.tateprograms.com${PROVIDER_PROXY_TRIAGE_PATH}`,
@@ -699,6 +757,14 @@ app.get(PROVIDER_PROXY_INDEX_WATCH_PATH, c => providerProxyInfo(c, {
   useMethod: "POST",
   description: "Marketplace-proxy upstream for 402 Index provider health watch. Requires X-Tate-Provider-Token.",
   acceptedFields: ["q", "provider", "domain", "url", "protocol", "health", "limit"]
+}));
+
+app.get(PROVIDER_PROXY_SKILL_TRUST_PATH, c => providerProxyInfo(c, {
+  name: "Provider Proxy Agent Skill Trust Check API",
+  endpoint: `https://the402.tateprograms.com${PROVIDER_PROXY_SKILL_TRUST_PATH}`,
+  useMethod: "POST",
+  description: "Marketplace-proxy upstream for public OpenClaw, Hermes, MCP, and SKILL.md trust checks. Requires X-Tate-Provider-Token.",
+  acceptedFields: ["url", "text", "format"]
 }));
 
 app.post(PROVIDER_PROXY_TRIAGE_PATH, async c => {
@@ -719,6 +785,16 @@ app.post(PROVIDER_PROXY_INDEX_WATCH_PATH, async c => {
   const request = providerProxyRequest(c, body, auth);
   const response = await indexWatchSurface(request);
   return providerProxyResult(response, c, auth, "x402_index_watch");
+});
+
+app.post(PROVIDER_PROXY_SKILL_TRUST_PATH, async c => {
+  const body = await c.req.raw.text();
+  const auth = await providerProxyAuth(c, body);
+  if (!auth.ok) return providerProxyAuthError(auth, c.req.header("origin"));
+
+  const request = providerProxyRequest(c, body, auth);
+  const response = await skillTrustSurface(request);
+  return providerProxyResult(response, c, auth, "agent_skill_trust_check");
 });
 
 app.post("/webhook/the402", c => handleWebhook(c.req.raw, c.env, c.executionCtx));
@@ -889,6 +965,330 @@ async function indexWatchSurface(request) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function skillTrustSurface(request) {
+  let input;
+  try {
+    input = await request.json();
+  } catch {
+    return json({ error: "invalid_json" }, { status: 400 });
+  }
+
+  const target = String(input.url || input.repo || input.skill_url || "").trim();
+  const pastedText = String(input.text || input.skill_text || "").trim();
+
+  let source = {
+    type: "pasted_text",
+    url: null,
+    label: "pasted skill text",
+    text: pastedText.slice(0, 100000)
+  };
+
+  if (target) {
+    const safe = validatePublicHttpsUrl(target);
+    if (!safe.ok) return json({ error: safe.reason }, { status: 400 });
+
+    const fetched = await fetchSkillSource(target);
+    if (!fetched.ok) {
+      return json({
+        ok: false,
+        error: "skill_source_fetch_failed",
+        reason: fetched.reason,
+        attempted: fetched.attempted || [target]
+      }, { status: 502 });
+    }
+    source = fetched;
+  } else if (!source.text) {
+    return json({
+      error: "url_or_text_required",
+      accepted_fields: ["url", "text"]
+    }, { status: 400 });
+  }
+
+  const review = reviewAgentSkillText(source.text, source);
+
+  return json({
+    ok: true,
+    checked_at: new Date().toISOString(),
+    source: {
+      type: source.type,
+      url: source.url,
+      label: source.label,
+      bytes_reviewed: source.text.length
+    },
+    ...review,
+    scope: "Public skill/repo text only. No install, command execution, wallet signature, private repository access, paid call, or credential use was attempted."
+  });
+}
+
+async function fetchSkillSource(target) {
+  const url = new URL(target);
+  const attempts = candidateSkillSourceUrls(url);
+  const errors = [];
+
+  for (const attempt of attempts) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort("timeout"), 8000);
+    try {
+      const response = await fetch(attempt.url, {
+        headers: {
+          accept: attempt.accept || "text/plain,text/markdown,application/json,*/*",
+          "user-agent": "TatePrograms-SkillTrustCheck/1.0"
+        },
+        signal: controller.signal
+      });
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!response.ok) {
+        errors.push(`${response.status} ${attempt.url}`);
+        continue;
+      }
+
+      const text = (await response.text()).slice(0, 100000);
+      if (!text.trim()) {
+        errors.push(`empty ${attempt.url}`);
+        continue;
+      }
+
+      return {
+        ok: true,
+        type: attempt.type,
+        url: attempt.url,
+        label: attempt.label,
+        text: normalizeFetchedSkillText(text, contentType)
+      };
+    } catch (error) {
+      errors.push(`${error?.message || String(error)} ${attempt.url}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return {
+    ok: false,
+    reason: errors[0] || "no_fetch_attempt_succeeded",
+    attempted: attempts.map(attempt => attempt.url)
+  };
+}
+
+function candidateSkillSourceUrls(url) {
+  if (url.hostname === "raw.githubusercontent.com") {
+    return [{ url: url.toString(), type: "raw_file", label: "raw GitHub file" }];
+  }
+
+  if (url.hostname === "github.com") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length >= 5 && parts[2] === "blob") {
+      return [{
+        url: `https://raw.githubusercontent.com/${parts[0]}/${parts[1]}/${parts[3]}/${parts.slice(4).join("/")}`,
+        type: "raw_file",
+        label: "GitHub blob file"
+      }];
+    }
+
+    if (parts.length >= 2) {
+      const [owner, repo] = parts;
+      return [
+        "SKILL.md",
+        "skills/SKILL.md",
+        ".agents/SKILL.md",
+        ".codex/skills/SKILL.md",
+        "README.md",
+        "skill.json",
+        "manifest.json"
+      ].flatMap(file => ([
+        {
+          url: `https://raw.githubusercontent.com/${owner}/${repo}/main/${file}`,
+          type: "github_repo_file",
+          label: `GitHub ${file} on main`
+        },
+        {
+          url: `https://raw.githubusercontent.com/${owner}/${repo}/master/${file}`,
+          type: "github_repo_file",
+          label: `GitHub ${file} on master`
+        }
+      ]));
+    }
+  }
+
+  return [{ url: url.toString(), type: "public_url", label: "public URL" }];
+}
+
+function normalizeFetchedSkillText(text, contentType) {
+  if (/html/i.test(contentType)) {
+    return text
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return text;
+}
+
+function reviewAgentSkillText(text, source) {
+  const normalized = text.toLowerCase();
+  const findings = [];
+  const positives = [];
+
+  const checks = [
+    {
+      category: "execution",
+      severity: "high",
+      pattern: /\b(rm\s+-rf|sudo\s+|curl\s+[^|]+\\|\s*(sh|bash)|wget\s+[^|]+\\|\s*(sh|bash)|eval\s*\(|exec\s*\(|child_process|spawn\s*\(|shell\s*:|bash\s+-c|powershell)\b/i,
+      note: "Skill references high-impact shell execution or install patterns. Require an explicit permission boundary and dry-run path."
+    },
+    {
+      category: "secrets",
+      severity: "high",
+      pattern: /\b(private[_ -]?key|seed phrase|mnemonic|process\.env|\.env|api[_ -]?key|authorization|bearer token|password|credential)\b/i,
+      note: "Skill references secrets or credentials. It needs a clear redaction, storage, and non-logging policy."
+    },
+    {
+      category: "wallets_payments",
+      severity: "high",
+      pattern: /\b(wallet|sign(ature|ing)?|transaction|transfer|usdc|x402|payment|settle|facilitator|private key)\b/i,
+      note: "Skill touches wallet or payment semantics. Add spend caps, approval rules, receipt logging, and replay/idempotency controls before use."
+    },
+    {
+      category: "network",
+      severity: "medium",
+      pattern: /\b(fetch|axios|webhook|http[s]?:\/\/|post\s+to|callback_url|exfiltrate|upload)\b/i,
+      note: "Skill can make network calls. Declare allowed domains, payload shape, retry behavior, and data minimization rules."
+    },
+    {
+      category: "prompt_boundary",
+      severity: "medium",
+      pattern: /\b(ignore previous|ignore all previous|system prompt|developer message|jailbreak|do not reveal|hidden instruction)\b/i,
+      note: "Skill text contains prompt-boundary language that should be reviewed for injection or policy-conflict risk."
+    },
+    {
+      category: "persistence",
+      severity: "medium",
+      pattern: /\b(write file|append to|cron|schedule|background|daemon|startup|launch agent|autostart|database|sqlite|lancedb|memory)\b/i,
+      note: "Skill may persist state or run later. Add retention, cleanup, and user-visible change logs."
+    }
+  ];
+
+  for (const check of checks) {
+    if (check.pattern.test(text)) {
+      findings.push({
+        severity: check.severity,
+        category: check.category,
+        note: check.note
+      });
+    }
+  }
+
+  const provenanceSignals = [
+    ["repository", /\b(repository|github|source)\b/i],
+    ["license", /\blicen[cs]e\b/i],
+    ["version", /\b(version|semver|release)\b/i],
+    ["permissions", /\b(permission|scope|allowlist|denylist|capability)\b/i],
+    ["tests", /\b(test|fixture|example output|dry[- ]run)\b/i],
+    ["safety", /\b(safety|security|threat|risk|redact|audit)\b/i]
+  ];
+
+  const present = provenanceSignals
+    .filter(([, pattern]) => pattern.test(text))
+    .map(([name]) => name);
+
+  for (const signal of present) {
+    positives.push(`Includes ${signal} signal.`);
+  }
+
+  const missing = provenanceSignals
+    .map(([name]) => name)
+    .filter(name => !present.includes(name));
+
+  if (missing.includes("permissions")) {
+    findings.push({
+      severity: "medium",
+      category: "provenance",
+      note: "No clear permission/scope declaration found."
+    });
+  }
+  if (missing.includes("tests")) {
+    findings.push({
+      severity: "low",
+      category: "verification",
+      note: "No test, fixture, dry-run, or example-output signal found."
+    });
+  }
+
+  const riskScore = computeSkillRiskScore(findings, present.length, normalized.length);
+  const patchOrder = buildSkillPatchOrder(findings, missing);
+
+  return {
+    risk_score: riskScore,
+    verdict: riskScore >= 85
+      ? "low_risk_from_public_text"
+      : riskScore >= 65
+        ? "review_before_install"
+        : "do_not_install_without_changes",
+    findings,
+    positives,
+    missing_signals: missing,
+    patch_order: patchOrder,
+    quick_read: summarizeSkillText(text, source),
+    paid_review_path: "https://tateprograms.com/agent-security-drill.html"
+  };
+}
+
+function computeSkillRiskScore(findings, provenanceCount, textLength) {
+  let score = 100;
+  for (const finding of findings) {
+    score -= finding.severity === "high" ? 18 : finding.severity === "medium" ? 10 : 5;
+  }
+  score += Math.min(provenanceCount * 3, 12);
+  if (textLength < 600) score -= 8;
+  return Math.max(0, Math.min(100, score));
+}
+
+function buildSkillPatchOrder(findings, missing) {
+  const categories = new Set(findings.map(finding => finding.category));
+  const patches = [];
+
+  if (categories.has("execution")) {
+    patches.push("Put every shell/install command behind explicit user approval, dry-run mode, and exact command logging.");
+  }
+  if (categories.has("secrets")) {
+    patches.push("Add a secrets policy: never print credentials, redact env values, and document where tokens are read and stored.");
+  }
+  if (categories.has("wallets_payments")) {
+    patches.push("Add wallet/payment controls: per-call caps, allowlisted recipients, idempotency keys, settlement proof, and refusal states.");
+  }
+  if (categories.has("network")) {
+    patches.push("Declare allowed network destinations, outbound payload fields, retry limits, and what data is never sent.");
+  }
+  if (categories.has("prompt_boundary")) {
+    patches.push("Remove prompt-boundary ambiguity and state that external content cannot override system, developer, or user instructions.");
+  }
+  if (categories.has("persistence")) {
+    patches.push("Document persistence paths, retention, cleanup command, and visible audit events for background work.");
+  }
+  if (missing.includes("permissions")) {
+    patches.push("Add a permissions block listing required tools, file paths, domains, wallet actions, and denied capabilities.");
+  }
+  if (missing.includes("tests")) {
+    patches.push("Add one fixture plus expected output so installers can verify the skill before connecting real accounts.");
+  }
+
+  return patches.length ? patches : ["No immediate patch blockers from public text; still review runtime code before connecting real accounts."];
+}
+
+function summarizeSkillText(text, source) {
+  const title = (text.match(/^#\s+(.+)$/m)?.[1] || source.label || "skill").trim().slice(0, 120);
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  const commandCount = (text.match(/```|`[^`]+`|\b(npm|pnpm|yarn|pip|uv|curl|wget|git|docker|node|python)\b/g) || []).length;
+  return {
+    title,
+    words,
+    command_markers: commandCount
+  };
 }
 
 function agentCard(env) {
