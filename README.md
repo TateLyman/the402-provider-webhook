@@ -75,4 +75,9 @@ After the provider account exists and `THE402_API_KEY` is available locally:
 THE402_API_KEY=sk_... bash docs/create-services.sh
 ```
 
+## Operations
+
+- Guardian onboarding checklist: `docs/guardian-onboarding-checklist.md`
+- Paid-job fulfillment runbook: `docs/fulfillment-runbook.md`
+
 Do not commit platform API keys, webhook secrets, wallet recovery data, or customer payloads.
