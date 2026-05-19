@@ -74,6 +74,16 @@ const TRIAGE_DISCOVERY = declareDiscoveryExtension({
         challenge_like: true,
         accepts_count: 1
       },
+      attack_checks: [
+        {
+          id: "replay_idempotency",
+          status: "partial_pass"
+        },
+        {
+          id: "header_proxy_cache",
+          status: "pass"
+        }
+      ],
       findings: [
         "Payment challenge returned before content."
       ]
@@ -527,7 +537,9 @@ async function triageSurface(request) {
     const raw = await response.text();
     const body = raw.slice(0, 65536);
     const parsed = parseJson(body);
+    const x402 = summarizeX402(parsed, response.headers);
     const paymentHeaders = pickHeaders(response.headers, [
+      "payment-required",
       "www-authenticate",
       "x-payment-required",
       "x-price-usdc",
@@ -547,8 +559,9 @@ async function triageSurface(request) {
         content_type: response.headers.get("content-type"),
         headers: paymentHeaders
       },
-      x402: summarizeX402(parsed, response.headers),
-      findings: buildTriageFindings(response, parsed),
+      x402,
+      attack_checks: buildAttackChecks(response, x402),
+      findings: buildTriageFindings(response, x402),
       scope: "Public no-payment triage only. No wallet, payment header, signature, private endpoint guessing, or paid call was attempted."
     });
   } catch (error) {
@@ -913,14 +926,27 @@ function pickHeaders(headers, names) {
 }
 
 function summarizeX402(parsed, headers) {
-  const accepts = Array.isArray(parsed?.accepts) ? parsed.accepts : [];
+  const headerPayment = parsePaymentRequirementHeader(headers);
+  const payment = (parsed?.x402Version || Array.isArray(parsed?.accepts)) ? parsed : headerPayment;
+  const accepts = Array.isArray(payment?.accepts) ? payment.accepts : [];
   const firstAccept = accepts[0] || null;
-  const requirementsHeader = headers.get("x-payment-requirements") || headers.get("www-authenticate");
+  const requirementsHeader = paymentRequirementHeaderValue(headers);
+  const resourceUrl = typeof payment?.resource === "object"
+    ? payment.resource.url
+    : payment?.resource;
 
   return {
-    challenge_like: Boolean(parsed?.x402Version || accepts.length || requirementsHeader),
-    version: parsed?.x402Version || parsed?.version || null,
+    challenge_like: Boolean(payment?.x402Version || accepts.length || requirementsHeader),
+    source: payment === parsed ? "body" : headerPayment ? "payment_header" : requirementsHeader ? "header_present" : null,
+    version: payment?.x402Version || payment?.version || null,
     accepts_count: accepts.length,
+    accepts_missing_resource: accepts.length
+      ? accepts.some((accept) => !(accept.resource || accept.extra?.resource))
+      : null,
+    accepts_missing_payee: accepts.length
+      ? accepts.some((accept) => !(accept.payTo || accept.pay_to || accept.recipient))
+      : null,
+    resource_uses_https: resourceUrl ? /^https:\/\//i.test(resourceUrl) : null,
     first_accept: firstAccept
       ? {
           scheme: firstAccept.scheme || null,
@@ -930,16 +956,85 @@ function summarizeX402(parsed, headers) {
           has_resource: Boolean(firstAccept.resource || firstAccept.extra?.resource)
         }
       : null,
-    resource_url: parsed?.resource?.url || parsed?.resource || null
+    resource_url: resourceUrl || null
   };
 }
 
-function buildTriageFindings(response, parsed) {
+function parsePaymentRequirementHeader(headers) {
+  const value = paymentRequirementHeaderValue(headers);
+  if (!value) return null;
+
+  const trimmed = value.trim();
+  if (trimmed.startsWith("{")) return parseJson(trimmed);
+
+  try {
+    return parseJson(globalThis.atob(trimmed));
+  } catch {
+    return null;
+  }
+}
+
+function paymentRequirementHeaderValue(headers) {
+  return headers.get("payment-required")
+    || headers.get("x-payment-required")
+    || headers.get("x-payment-requirements")
+    || headers.get("www-authenticate");
+}
+
+function buildAttackChecks(response, x402) {
+  if (!x402.challenge_like) {
+    return [];
+  }
+
+  const cacheControl = response.headers.get("cache-control") || "";
+  const exposeHeaders = response.headers.get("access-control-expose-headers") || "";
+
+  return [
+    {
+      id: "settlement_finality",
+      status: "manual_review",
+      risk: "Grant-before-finality can deliver paid resources before settlement is durable.",
+      external_signal: "Not provable without facilitator/settlement logs in a no-payment pass.",
+      expected_control: "Wait for the facilitator's settled result or durable confirmation policy before releasing the resource."
+    },
+    {
+      id: "replay_idempotency",
+      status: x402.accepts_missing_resource === false && x402.resource_uses_https !== false ? "partial_pass" : "needs_fix",
+      risk: "A reusable payment payload can grant the same resource more than once if the server lacks a pre-grant payment identity ledger.",
+      external_signal: x402.accepts_missing_resource === false && x402.resource_uses_https !== false
+        ? "Accept legs repeat the charged resource URL."
+        : "At least one accept leg lacks a charged resource binding or the resource URL is not HTTPS.",
+      expected_control: "Record a canonical payment identity before grant and bind it to method, resource URL, amount, asset, and recipient."
+    },
+    {
+      id: "header_proxy_cache",
+      status: /no-store|private/i.test(cacheControl) ? "pass" : "needs_fix",
+      risk: "Payment-sensitive responses can leak through ordinary HTTP caches or proxy handling.",
+      external_signal: cacheControl || "No cache-control header observed.",
+      expected_control: "Return no-store/private on 402 and paid responses, expose payment headers deliberately, and keep payment headers out of logs."
+    },
+    {
+      id: "browser_payment_headers",
+      status: /x-payment|payment/i.test(exposeHeaders) ? "pass" : "needs_fix",
+      risk: "Browser agents may be unable to read the payment challenge or settlement response.",
+      external_signal: exposeHeaders || "No Access-Control-Expose-Headers observed.",
+      expected_control: "Expose Payment-Required and payment response headers for allowed origins."
+    },
+    {
+      id: "discovery_selection",
+      status: "manual_review",
+      risk: "Agent marketplaces can be biased by weak metadata, duplicated listings, or unverified trust cues.",
+      external_signal: x402.source ? `Payment challenge parsed from ${x402.source}.` : "Payment challenge present but not parsed.",
+      expected_control: "Use stable provider identity, accurate pricing, canonical resource metadata, and avoid misleading discovery text."
+    }
+  ];
+}
+
+function buildTriageFindings(response, x402) {
   const findings = [];
   const cacheControl = response.headers.get("cache-control") || "";
   const allowOrigin = response.headers.get("access-control-allow-origin");
   const exposeHeaders = response.headers.get("access-control-expose-headers") || "";
-  const accepts = Array.isArray(parsed?.accepts) ? parsed.accepts : [];
 
   if (response.status === 402) {
     findings.push("Payment challenge returned before content.");
@@ -952,8 +1047,11 @@ function buildTriageFindings(response, parsed) {
     if (!/x-payment|payment/i.test(exposeHeaders)) {
       findings.push("402 response does not expose payment-related headers to browser agents.");
     }
-    if (accepts.length && accepts.some((accept) => !(accept.resource || accept.extra?.resource))) {
+    if (x402.accepts_missing_resource) {
       findings.push("At least one accept leg does not repeat the charged resource URL.");
+    }
+    if (x402.resource_uses_https === false) {
+      findings.push("Payment challenge resource URL is not HTTPS.");
     }
   } else if (response.status >= 200 && response.status < 300) {
     findings.push("Target returned success without a payment challenge for this no-payment probe.");

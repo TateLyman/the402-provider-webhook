@@ -15,6 +15,7 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
 - `POST https://the402.tateprograms.com/api/x402/triage` and `/api/x402/index-watch` are paid x402 APIs.
   They always advertise Solana mainnet USDC and add a Base mainnet USDC accept leg when `BASE_PAY_TO` is configured.
   Their unpaid `402` responses include machine-readable `x402Version`, `resource`, `accepts`, and Bazaar discovery metadata in both the `Payment-Required` header and JSON body for agent marketplace validators.
+  Triage results also include focused attack checks for settlement finality, replay/idempotency, proxy/cache handling, browser payment headers, and discovery-selection risk.
 
 The webhook verifies:
 
