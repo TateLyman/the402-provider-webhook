@@ -11,3 +11,5 @@ BRAND_NAME = "Tate Programs"
 PUBLIC_SITE = "https://tateprograms.com"
 FIX_SPRINT_URL = "https://tateprograms.com/x402-fix-sprint.html"
 REQUIRE_SIGNATURE = "true"
+# Optional public Base mainnet receive address for Agentic Market-compatible x402.
+# BASE_PAY_TO = "0x..."

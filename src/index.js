@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { paymentMiddlewareFromConfig } from "@x402/hono";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { ExactSvmScheme } from "@x402/svm/exact/server";
 
 const JSON_HEADERS = {
@@ -11,6 +12,7 @@ const JSON_HEADERS = {
 
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 const SOLANA_PAY_TO = "2Zfwj9JCmNfkhNxXKouHFMBq4Hb2h3zAa6Togyf8wQev";
+const BASE_MAINNET = "eip155:8453";
 const PAID_TRIAGE_PATH = "/api/x402/triage";
 const INDEX_WATCH_PATH = "/api/x402/index-watch";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
@@ -160,7 +162,7 @@ const SERVICE_CATALOG = [
     price_usd: 0.01,
     delivery: "instant",
     url: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
-    network: "Solana mainnet USDC"
+    network: "Solana mainnet USDC; Base mainnet USDC when BASE_PAY_TO is configured"
   },
   {
     id: "x402-index-watch-api",
@@ -168,32 +170,32 @@ const SERVICE_CATALOG = [
     price_usd: 0.01,
     delivery: "instant",
     url: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
-    network: "Solana mainnet USDC"
+    network: "Solana mainnet USDC; Base mainnet USDC when BASE_PAY_TO is configured"
   }
 ];
 
 const app = new Hono();
 let paidTriageMiddleware;
+let paidTriageMiddlewareKey;
 
-function getPaidTriageMiddleware() {
-  if (!paidTriageMiddleware) {
+function getPaidTriageMiddleware(env = {}) {
+  const basePayTo = normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || "");
+  const middlewareKey = basePayTo || "solana-only";
+
+  if (!paidTriageMiddleware || paidTriageMiddlewareKey !== middlewareKey) {
     const facilitator = new HTTPFacilitatorClient({ url: PAYAI_FACILITATOR_URL });
+    const triageResource = `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`;
+    const indexWatchResource = `https://the402.tateprograms.com${INDEX_WATCH_PATH}`;
+
     paidTriageMiddleware = paymentMiddlewareFromConfig(
       {
         [`POST ${PAID_TRIAGE_PATH}`]: {
-          accepts: {
-            scheme: "exact",
-            price: "$0.01",
-            network: SOLANA_MAINNET,
-            payTo: SOLANA_PAY_TO,
-            extra: {
-              provider: "Tate Programs",
-              category: "agent-payments",
-              service: "x402-public-triage",
-              resource: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`
-            }
-          },
-          resource: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
+          accepts: buildAccepts({
+            service: "x402-public-triage",
+            resource: triageResource,
+            basePayTo
+          }),
+          resource: triageResource,
           description: "Paid no-payment triage for public x402, MPP, Pay.sh, and agent-payment launch surfaces.",
           mimeType: "application/json",
           extensions: {
@@ -205,26 +207,19 @@ function getPaidTriageMiddleware() {
               error: "payment_required",
               service: "x402 Public Triage API",
               price: "$0.01",
-              network: SOLANA_MAINNET,
-              payTo: SOLANA_PAY_TO,
+              networks: describePaidNetworks(basePayTo),
+              payTo: describePayTo(basePayTo),
               scope: "Submit a public HTTPS endpoint or manifest. No payment header, wallet signature, private endpoint guessing, or paid upstream call is attempted."
             }
           })
         },
         [`POST ${INDEX_WATCH_PATH}`]: {
-          accepts: {
-            scheme: "exact",
-            price: "$0.01",
-            network: SOLANA_MAINNET,
-            payTo: SOLANA_PAY_TO,
-            extra: {
-              provider: "Tate Programs",
-              category: "agent-payments",
-              service: "x402-index-watch",
-              resource: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`
-            }
-          },
-          resource: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
+          accepts: buildAccepts({
+            service: "x402-index-watch",
+            resource: indexWatchResource,
+            basePayTo
+          }),
+          resource: indexWatchResource,
           description: "Paid 402 Index health watch for provider, domain, or service search terms.",
           mimeType: "application/json",
           extensions: {
@@ -236,20 +231,90 @@ function getPaidTriageMiddleware() {
               error: "payment_required",
               service: "x402 Index Watch API",
               price: "$0.01",
-              network: SOLANA_MAINNET,
-              payTo: SOLANA_PAY_TO,
+              networks: describePaidNetworks(basePayTo),
+              payTo: describePayTo(basePayTo),
               scope: "Submit a provider, domain, or service query. Returns public 402 Index health and launch-readiness signals."
             }
           })
         }
       },
       facilitator,
-      [{ network: "solana:*", server: new ExactSvmScheme() }],
+      buildSchemes(basePayTo),
       { appName: "Tate Programs", testnet: false }
     );
+    paidTriageMiddlewareKey = middlewareKey;
   }
 
   return paidTriageMiddleware;
+}
+
+function buildAccepts({ service, resource, basePayTo }) {
+  const commonExtra = {
+    provider: "Tate Programs",
+    category: "agent-payments",
+    service,
+    resource
+  };
+  const accepts = [];
+
+  if (basePayTo) {
+    accepts.push({
+      scheme: "exact",
+      price: "$0.01",
+      network: BASE_MAINNET,
+      payTo: basePayTo,
+      extra: commonExtra
+    });
+  }
+
+  accepts.push({
+    scheme: "exact",
+    price: "$0.01",
+    network: SOLANA_MAINNET,
+    payTo: SOLANA_PAY_TO,
+    extra: commonExtra
+  });
+
+  return accepts;
+}
+
+function buildSchemes(basePayTo) {
+  const schemes = [{ network: "solana:*", server: new ExactSvmScheme() }];
+
+  if (basePayTo) {
+    schemes.unshift({ network: BASE_MAINNET, server: new ExactEvmScheme() });
+  }
+
+  return schemes;
+}
+
+function normalizeEvmAddress(value) {
+  const address = String(value || "").trim();
+  return /^0x[a-fA-F0-9]{40}$/.test(address) ? address : "";
+}
+
+function describePaidNetworks(basePayTo) {
+  return basePayTo ? [BASE_MAINNET, SOLANA_MAINNET] : [SOLANA_MAINNET];
+}
+
+function describePayTo(basePayTo) {
+  return basePayTo
+    ? { [BASE_MAINNET]: basePayTo, [SOLANA_MAINNET]: SOLANA_PAY_TO }
+    : { [SOLANA_MAINNET]: SOLANA_PAY_TO };
+}
+
+function paidServiceWithEnv(service, env = {}) {
+  if (![PAID_TRIAGE_PATH, INDEX_WATCH_PATH].some(path => String(service.url || "").includes(path))) {
+    return service;
+  }
+
+  const basePayTo = normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || "");
+  return {
+    ...service,
+    networks: describePaidNetworks(basePayTo),
+    payTo: describePayTo(basePayTo),
+    network: basePayTo ? "Base mainnet USDC + Solana mainnet USDC" : "Solana mainnet USDC"
+  };
 }
 
 app.get("/health", c => c.json({
@@ -264,7 +329,7 @@ app.get("/health", c => c.json({
 
 app.get("/services", c => c.json({
   provider: c.env.BRAND_NAME || "Tate Programs",
-  services: SERVICE_CATALOG
+  services: SERVICE_CATALOG.map(service => paidServiceWithEnv(service, c.env))
 }, 200, JSON_HEADERS));
 
 app.get("/.well-known/agent-card.json", c => c.json(agentCard(c.env), 200, JSON_HEADERS));
@@ -284,7 +349,7 @@ async function paidRouteGuard(c, next) {
     return new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) });
   }
 
-  const response = await getPaidTriageMiddleware()(c, next);
+  const response = await getPaidTriageMiddleware(c.env)(c, next);
   const target = response instanceof Response ? response : c.res;
   applyCors(target.headers, c.req.header("origin"));
   target.headers.set("cache-control", "no-store");
@@ -297,13 +362,13 @@ app.use(INDEX_WATCH_PATH, paidRouteGuard);
 
 app.post(PAID_TRIAGE_PATH, async c => {
   const response = await triageSurface(c.req.raw);
-  response.headers.set("x-tate-programs-paid-endpoint", "x402-solana");
+  response.headers.set("x-tate-programs-paid-endpoint", "x402-multirail");
   return response;
 });
 
 app.post(INDEX_WATCH_PATH, async c => {
   const response = await indexWatchSurface(c.req.raw);
-  response.headers.set("x-tate-programs-paid-endpoint", "x402-solana");
+  response.headers.set("x-tate-programs-paid-endpoint", "x402-multirail");
   return response;
 });
 
@@ -475,6 +540,8 @@ async function indexWatchSurface(request) {
 }
 
 function agentCard(env) {
+  const basePayTo = normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || "");
+
   return {
     name: "Tate Programs x402 Launch Triage",
     description: "Public no-payment triage for x402, MPP, Pay.sh, and agent-payment launch surfaces. Returns status, payment headers, challenge summary, cache/CORS notes, and the fixed-scope paid review path.",
@@ -513,8 +580,8 @@ function agentCard(env) {
         url: `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
         method: "POST",
         price: "$0.01",
-        network: SOLANA_MAINNET,
-        payTo: SOLANA_PAY_TO,
+        network: describePaidNetworks(basePayTo),
+        payTo: describePayTo(basePayTo),
         input_schema: {
           type: "object",
           required: ["url"],
@@ -540,8 +607,8 @@ function agentCard(env) {
         url: `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
         method: "POST",
         price: "$0.01",
-        network: SOLANA_MAINNET,
-        payTo: SOLANA_PAY_TO,
+        network: describePaidNetworks(basePayTo),
+        payTo: describePayTo(basePayTo),
         input_schema: {
           type: "object",
           required: ["q"],
