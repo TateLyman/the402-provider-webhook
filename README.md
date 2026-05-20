@@ -13,6 +13,7 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
 - `GET https://the402.tateprograms.com/health` returns a no-store health check.
 - `GET https://the402.tateprograms.com/webhook/the402` returns a non-secret onboarding/readiness readback for the provider webhook.
 - `POST https://the402.tateprograms.com/webhook/the402` receives provider events from the402.
+- `GET https://the402.tateprograms.com/.well-known/x402` exposes the public x402 manifest for direct marketplace crawlers and agent-payment directories.
 - `POST https://the402.tateprograms.com/api/x402/triage` and `/api/x402/index-watch` are paid x402 APIs.
   They advertise Base mainnet USDC to the known Tate Programs receive address by default.
   Solana is opt-in only when `SOLANA_PAY_TO` is deliberately configured.

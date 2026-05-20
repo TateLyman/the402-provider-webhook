@@ -594,6 +594,45 @@ function paidEndpointInfo({ name, endpoint, useMethod, description, acceptedFiel
   };
 }
 
+function x402Manifest(env = {}) {
+  const paymentTargets = paymentTargetsFromEnv(env);
+  const paidRoutes = [PAID_TRIAGE_PATH, INDEX_WATCH_PATH, SKILL_TRUST_PATH, A2A_PATH]
+    .map(path => paidRouteDescriptor(path))
+    .filter(Boolean);
+
+  return {
+    name: "Tate Programs x402 Surface Checks",
+    description: "Paid public-surface checks for x402, MPP, Pay.sh, A2A, and agent-skill launch readiness.",
+    version: "1.0.0",
+    provider: env.BRAND_NAME || "Tate Programs",
+    base_url: "https://the402.tateprograms.com",
+    facilitator: PAYAI_FACILITATOR_URL,
+    networks: describePaidNetworks(paymentTargets),
+    pay_to: describePayTo(paymentTargets),
+    endpoints: paidRoutes.map(route => {
+      const resource = `https://the402.tateprograms.com${route.path}`;
+      return {
+        method: "POST",
+        path: route.path,
+        name: route.displayName,
+        description: route.description,
+        price_usd: 0.01,
+        accepts: buildAtomicAccepts({
+          service: route.service,
+          resource,
+          paymentTargets
+        }),
+        extensions: {
+          ...route.discovery
+        }
+      };
+    }),
+    agent_card_url: "https://the402.tateprograms.com/.well-known/agent.json",
+    docs_url: "https://tateprograms.com/x402-surface-check.html",
+    tags: ["x402", "agent-payments", "mpp", "a2a", "skill-trust", "launch-readiness"]
+  };
+}
+
 function providerProxyInfo(c, { name, endpoint, useMethod, description, acceptedFields }) {
   const challenge = String(c.req.query("challenge") || "").trim();
   if (challenge) {
@@ -759,6 +798,7 @@ app.get("/services", c => c.json({
 
 app.get("/.well-known/agent-card.json", c => c.json(agentCard(c.env), 200, JSON_HEADERS));
 app.get("/.well-known/agent.json", c => c.json(a2aAgentCard(c.env), 200, JSON_HEADERS));
+app.get("/.well-known/x402", c => c.json(x402Manifest(c.env), 200, JSON_HEADERS));
 
 app.get("/.well-known/402index-verify.txt", c => new Response(INDEX_402_VERIFICATION_HASH, {
   status: 200,
