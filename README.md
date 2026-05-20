@@ -11,6 +11,7 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
 ## Routes
 
 - `GET https://the402.tateprograms.com/health` returns a no-store health check.
+- `GET https://the402.tateprograms.com/webhook/the402` returns a non-secret onboarding/readiness readback for the provider webhook.
 - `POST https://the402.tateprograms.com/webhook/the402` receives provider events from the402.
 - `POST https://the402.tateprograms.com/api/x402/triage` and `/api/x402/index-watch` are paid x402 APIs.
   They advertise Base mainnet USDC to the known Tate Programs receive address by default.

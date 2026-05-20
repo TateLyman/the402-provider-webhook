@@ -1020,6 +1020,25 @@ app.post(PROVIDER_PROXY_SKILL_TRUST_PATH, async c => {
   return providerProxyResult(response, c, auth, "agent_skill_trust_check");
 });
 
+app.get("/webhook/the402", c => c.json({
+  ok: true,
+  endpoint: "https://the402.tateprograms.com/webhook/the402",
+  method: "POST",
+  expects: {
+    content_type: "application/json",
+    platform_secret_header: "X-Platform-Secret",
+    signature_header: "X-Webhook-Signature",
+    timestamp_header: "X-Webhook-Timestamp"
+  },
+  configured: {
+    api_key: Boolean(c.env.THE402_API_KEY),
+    webhook_secret: Boolean(c.env.THE402_WEBHOOK_SECRET),
+    notify_webhook: Boolean(c.env.NOTIFY_WEBHOOK_URL)
+  },
+  accepted_event_types: [...ALLOWED_EVENT_TYPES].sort(),
+  note: "This readback never exposes secrets. POST dispatches require the configured platform secret and HMAC signature when enabled."
+}, 200, JSON_HEADERS));
+
 app.post("/webhook/the402", c => handleWebhook(c.req.raw, c.env, c.executionCtx));
 
 app.notFound(c => c.json({ error: "not_found" }, 404, JSON_HEADERS));
