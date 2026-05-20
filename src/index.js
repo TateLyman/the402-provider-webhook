@@ -687,12 +687,93 @@ async function paidRouteGuard(c, next) {
     return new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) });
   }
 
+  if (!hasPaymentHeader(c)) {
+    return unpaidChallengeResponse(c);
+  }
+
   const response = await getPaidTriageMiddleware(c.env)(c, next);
   const target = response instanceof Response ? response : c.res;
   applyCors(target.headers, c.req.header("origin"));
   target.headers.set("cache-control", "no-store");
   target.headers.set("access-control-expose-headers", "payment-required,x-payment-response");
   return target;
+}
+
+function hasPaymentHeader(c) {
+  const paymentSignature = c.req.header("payment-signature");
+  const xPayment = c.req.header("x-payment");
+  return Boolean(
+    (typeof paymentSignature === "string" && paymentSignature.trim())
+    || (typeof xPayment === "string" && xPayment.trim())
+  );
+}
+
+function unpaidChallengeResponse(c) {
+  const route = paidRouteDescriptor(c.req.path);
+  if (!route) {
+    return c.json({ error: "not_found" }, 404, JSON_HEADERS);
+  }
+
+  const paymentTargets = paymentTargetsFromEnv(c.env);
+  const resourceUrl = `https://the402.tateprograms.com${route.path}`;
+  const body = buildPaymentRequiredBody({
+    service: route.service,
+    displayName: route.displayName,
+    resource: resourceUrl,
+    description: route.description,
+    discovery: route.discovery,
+    scope: route.scope,
+    paymentTargets
+  });
+  const headerBody = {
+    x402Version: body.x402Version,
+    accepts: body.accepts.map(accept => ({
+      ...accept,
+      extra: {
+        ...accept.extra,
+        resource: resourceUrl
+      }
+    })),
+    resource: {
+      ...body.resource,
+      url: resourceUrl
+    },
+    extensions: body.extensions
+  };
+  const headers = new Headers(JSON_HEADERS);
+  applyCors(headers, c.req.header("origin"));
+  headers.set("payment-required", JSON.stringify(headerBody));
+  headers.set("access-control-expose-headers", "payment-required,x-payment-response");
+  return new Response(JSON.stringify(body, null, 2), {
+    status: 402,
+    headers
+  });
+}
+
+function paidRouteDescriptor(path) {
+  if (path === PAID_TRIAGE_PATH) {
+    return {
+      path: PAID_TRIAGE_PATH,
+      service: "x402-paid-triage",
+      displayName: "x402 Paid Triage API",
+      description: "Paid no-payment triage for public x402, MPP, Pay.sh, and agent-payment launch surfaces.",
+      discovery: TRIAGE_DISCOVERY,
+      scope: "Submit a public HTTPS endpoint or manifest. No payment header, wallet signature, private endpoint guessing, or paid upstream call is attempted."
+    };
+  }
+
+  if (path === INDEX_WATCH_PATH) {
+    return {
+      path: INDEX_WATCH_PATH,
+      service: "x402-index-watch",
+      displayName: "x402 Index Watch API",
+      description: "Paid 402 Index health watch for provider, domain, or service search terms.",
+      discovery: INDEX_WATCH_DISCOVERY,
+      scope: "Submit a provider, domain, or service query. Returns public 402 Index health and launch-readiness signals."
+    };
+  }
+
+  return null;
 }
 
 app.use(PAID_TRIAGE_PATH, paidRouteGuard);
