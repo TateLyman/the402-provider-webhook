@@ -525,6 +525,7 @@ function buildAtomicAccepts({ service, resource, paymentTargets }) {
       asset: BASE_USDC_ASSET,
       payTo: paymentTargets.basePayTo,
       maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
+      resource,
       extra: {
         name: "USD Coin",
         version: "2",
@@ -541,6 +542,7 @@ function buildAtomicAccepts({ service, resource, paymentTargets }) {
       asset: SOLANA_USDC_ASSET,
       payTo: paymentTargets.solanaPayTo,
       maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
+      resource,
       extra: {
         ...commonExtra,
         feePayer: SOLANA_FEE_PAYER
@@ -642,6 +644,7 @@ function x402Manifest(env = {}) {
     .filter(Boolean);
 
   return {
+    x402Version: 2,
     name: "Tate Programs x402 Surface Checks",
     description: "Paid public-surface checks for x402, MPP, Pay.sh, A2A, and agent-skill launch readiness.",
     version: "1.0.0",
