@@ -519,6 +519,15 @@ function buildAtomicAccepts({ service, resource, paymentTargets }) {
   return accepts;
 }
 
+function encodePaymentHeader(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
 function buildSchemes(paymentTargets) {
   const schemes = [];
 
@@ -870,7 +879,7 @@ function unpaidChallengeResponse(c) {
   };
   const headers = new Headers(JSON_HEADERS);
   applyCors(headers, c.req.header("origin"));
-  headers.set("payment-required", JSON.stringify(headerBody));
+  headers.set("payment-required", encodePaymentHeader(headerBody));
   headers.set("access-control-expose-headers", "payment-required,x-payment-response");
   return new Response(JSON.stringify(body, null, 2), {
     status: 402,

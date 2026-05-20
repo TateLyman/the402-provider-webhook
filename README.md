@@ -17,7 +17,7 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
 - `POST https://the402.tateprograms.com/api/x402/triage` and `/api/x402/index-watch` are paid x402 APIs.
   They advertise Base mainnet USDC to the known Tate Programs receive address by default.
   Solana is opt-in only when `SOLANA_PAY_TO` is deliberately configured.
-  Their unpaid `402` responses include machine-readable `x402Version`, `resource`, `accepts`, and Bazaar discovery metadata in both the `Payment-Required` header and JSON body for agent marketplace validators.
+  Their unpaid `402` responses include machine-readable `x402Version`, `resource`, `accepts`, and Bazaar discovery metadata in a base64-encoded `Payment-Required` header and a readable JSON body for agent marketplace validators.
   Triage results also include focused attack checks for settlement finality, replay/idempotency, proxy/cache handling, browser payment headers, and discovery-selection risk.
 - `GET https://the402.tateprograms.com/.well-known/agent.json` exposes an A2A-style AgentCard for current agent marketplaces and registries.
 - `POST https://the402.tateprograms.com/a2a` is a paid JSON-RPC/A2A entrypoint for agent-payment surface triage, x402 index watching, and agent-skill trust checks.
