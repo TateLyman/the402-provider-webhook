@@ -17,6 +17,9 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
   Solana is opt-in only when `SOLANA_PAY_TO` is deliberately configured.
   Their unpaid `402` responses include machine-readable `x402Version`, `resource`, `accepts`, and Bazaar discovery metadata in both the `Payment-Required` header and JSON body for agent marketplace validators.
   Triage results also include focused attack checks for settlement finality, replay/idempotency, proxy/cache handling, browser payment headers, and discovery-selection risk.
+- `GET https://the402.tateprograms.com/.well-known/agent.json` exposes an A2A-style AgentCard for current agent marketplaces and registries.
+- `POST https://the402.tateprograms.com/a2a` is a paid JSON-RPC/A2A entrypoint for agent-payment surface triage, x402 index watching, and agent-skill trust checks.
+  It uses the same HTTP-layer x402 Base USDC guard as the direct `/api/x402/*` APIs.
 - `POST https://the402.tateprograms.com/api/provider/triage` and `/api/provider/index-watch` are proxy-marketplace upstream routes.
   They do not return x402 challenges. Instead, a marketplace such as APIHub can collect buyer payment, inject `X-Tate-Provider-Token`, forward the call, and settle payout through that marketplace.
   Use these only behind a configured `PROVIDER_PROXY_TOKEN`; public x402 buyers should use the `/api/x402/*` routes.
@@ -77,6 +80,15 @@ Endpoint path: /api/provider/index-watch
 Method: POST
 Price per request: 10000 microdollars ($0.01)
 Upstream auth header: X-Tate-Provider-Token
+```
+
+For A2A/A2X-style agent registries:
+
+```text
+AgentCard URL: https://the402.tateprograms.com/.well-known/agent.json
+Paid endpoint: https://the402.tateprograms.com/a2a
+Method: POST
+Payment: x402 over HTTP, Base mainnet USDC, $0.01 per call
 ```
 
 Set the provider webhook URL in the402:

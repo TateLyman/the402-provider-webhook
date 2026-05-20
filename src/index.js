@@ -22,10 +22,12 @@ const MAX_PAYMENT_TIMEOUT_SECONDS = 300;
 const PAID_TRIAGE_PATH = "/api/x402/triage";
 const INDEX_WATCH_PATH = "/api/x402/index-watch";
 const SKILL_TRUST_PATH = "/api/x402/skill-trust-check";
+const A2A_PATH = "/a2a";
 const PROVIDER_PROXY_TRIAGE_PATH = "/api/provider/triage";
 const PROVIDER_PROXY_INDEX_WATCH_PATH = "/api/provider/index-watch";
 const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
+const A2A_X402_EXTENSION_URI = "https://github.com/google-agentic-commerce/a2a-x402/blob/main/spec/v0.2";
 const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
 
 const ALLOWED_EVENT_TYPES = new Set([
@@ -187,6 +189,49 @@ const SKILL_TRUST_DISCOVERY = declareDiscoveryExtension({
   }
 });
 
+const A2A_DISCOVERY = declareDiscoveryExtension({
+  input: {
+    message: {
+      role: "user",
+      parts: [
+        {
+          text: "{\"skill\":\"triage\",\"url\":\"https://api.example.com/.well-known/x402\",\"method\":\"GET\"}"
+        }
+      ]
+    }
+  },
+  inputSchema: {
+    properties: {
+      message: {
+        type: "object",
+        description: "A2A message with text or JSON input for triage, index_watch, or skill_trust."
+      },
+      skill: {
+        type: "string",
+        enum: ["triage", "index_watch", "skill_trust"],
+        description: "Optional explicit Tate Programs skill route."
+      }
+    },
+    required: ["message"]
+  },
+  bodyType: "json",
+  output: {
+    example: {
+      jsonrpc: "2.0",
+      result: {
+        status: {
+          state: "completed"
+        },
+        metadata: {
+          service: "x402_launch_triage",
+          delivered_by: "Tate Programs"
+        }
+      }
+    }
+  }
+});
+
+
 const SERVICE_CATALOG = [
   {
     id: "x402-launch-recheck",
@@ -241,6 +286,15 @@ const SERVICE_CATALOG = [
     network: "Base mainnet USDC"
   },
   {
+    id: "a2a-agent-payment-surface-triage",
+    name: "Agent Payment Surface Triage A2A",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${A2A_PATH}`,
+    discovery: "https://the402.tateprograms.com/.well-known/agent.json",
+    network: "Base mainnet USDC"
+  },
+  {
     id: "provider-proxy-triage-api",
     name: "Provider Proxy Triage API",
     price_usd: 0.01,
@@ -282,6 +336,7 @@ function getPaidTriageMiddleware(env = {}) {
     const triageResource = `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`;
     const indexWatchResource = `https://the402.tateprograms.com${INDEX_WATCH_PATH}`;
     const skillTrustResource = `https://the402.tateprograms.com${SKILL_TRUST_PATH}`;
+    const a2aResource = `https://the402.tateprograms.com${A2A_PATH}`;
     const triageConfig = () => buildPaidRouteConfig({
       service: "x402-paid-triage",
       displayName: "x402 Paid Triage API",
@@ -309,6 +364,15 @@ function getPaidTriageMiddleware(env = {}) {
       scope: "Submit a public skill URL, GitHub repo, raw SKILL.md, or pasted skill text. No install, command execution, wallet signature, private repository access, or paid upstream call is attempted.",
       paymentTargets
     });
+    const a2aConfig = () => buildPaidRouteConfig({
+      service: "a2a-agent-payment-surface-triage",
+      displayName: "Agent Payment Surface Triage A2A",
+      resource: a2aResource,
+      description: "A2A JSON-RPC entrypoint for x402 launch triage, 402 Index watch, and agent-skill trust checks.",
+      discovery: A2A_DISCOVERY,
+      scope: "Send an A2A message with JSON input or plain text. The paid call is routed to public no-payment triage, 402 Index watch, or skill trust checks. No private endpoint guessing or paid upstream call is attempted.",
+      paymentTargets
+    });
 
     paidTriageMiddleware = paymentMiddlewareFromConfig(
       {
@@ -317,7 +381,8 @@ function getPaidTriageMiddleware(env = {}) {
         [`GET ${INDEX_WATCH_PATH}`]: indexWatchConfig(),
         [`POST ${INDEX_WATCH_PATH}`]: indexWatchConfig(),
         [`GET ${SKILL_TRUST_PATH}`]: skillTrustConfig(),
-        [`POST ${SKILL_TRUST_PATH}`]: skillTrustConfig()
+        [`POST ${SKILL_TRUST_PATH}`]: skillTrustConfig(),
+        [`POST ${A2A_PATH}`]: a2aConfig()
       },
       facilitator,
       buildSchemes(paymentTargets),
@@ -500,7 +565,7 @@ function describePayTo(paymentTargets) {
 }
 
 function paidServiceWithEnv(service, env = {}) {
-  if (![PAID_TRIAGE_PATH, INDEX_WATCH_PATH, SKILL_TRUST_PATH].some(path => String(service.url || "").includes(path))) {
+  if (![PAID_TRIAGE_PATH, INDEX_WATCH_PATH, SKILL_TRUST_PATH, A2A_PATH].some(path => String(service.url || "").includes(path))) {
     return service;
   }
 
@@ -693,6 +758,7 @@ app.get("/services", c => c.json({
 }, 200, JSON_HEADERS));
 
 app.get("/.well-known/agent-card.json", c => c.json(agentCard(c.env), 200, JSON_HEADERS));
+app.get("/.well-known/agent.json", c => c.json(a2aAgentCard(c.env), 200, JSON_HEADERS));
 
 app.get("/.well-known/402index-verify.txt", c => new Response(INDEX_402_VERIFICATION_HASH, {
   status: 200,
@@ -806,12 +872,27 @@ function paidRouteDescriptor(path) {
     };
   }
 
+  if (path === A2A_PATH) {
+    return {
+      path: A2A_PATH,
+      service: "a2a-agent-payment-surface-triage",
+      displayName: "Agent Payment Surface Triage A2A",
+      description: "A2A JSON-RPC entrypoint for x402 launch triage, 402 Index watch, and agent-skill trust checks.",
+      discovery: A2A_DISCOVERY,
+      scope: "Send an A2A message with JSON input or plain text. The paid call is routed to public no-payment triage, 402 Index watch, or skill trust checks. No private endpoint guessing or paid upstream call is attempted."
+    };
+  }
+
   return null;
 }
 
 app.use(PAID_TRIAGE_PATH, paidRouteGuard);
 app.use(INDEX_WATCH_PATH, paidRouteGuard);
 app.use(SKILL_TRUST_PATH, paidRouteGuard);
+app.use(A2A_PATH, async (c, next) => {
+  if (c.req.method === "POST" || c.req.method === "OPTIONS") return paidRouteGuard(c, next);
+  return next();
+});
 
 app.get(PAID_TRIAGE_PATH, c => c.json(paidEndpointInfo({
   name: "x402 Paid Triage API",
@@ -857,6 +938,18 @@ app.post(SKILL_TRUST_PATH, async c => {
   response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
   return response;
 });
+
+app.get(A2A_PATH, c => c.json({
+  ok: true,
+  service: "Agent Payment Surface Triage A2A",
+  endpoint: `https://the402.tateprograms.com${A2A_PATH}`,
+  method: "POST",
+  discovery: "https://the402.tateprograms.com/.well-known/agent.json",
+  price: USDC_PRICE,
+  networks: describePaidNetworks(paymentTargetsFromEnv(c.env))
+}, 200, JSON_HEADERS));
+
+app.post(A2A_PATH, c => a2aSurface(c));
 
 app.options(PROVIDER_PROXY_TRIAGE_PATH, c => new Response(null, {
   status: 204,
@@ -1539,6 +1632,304 @@ function agentCard(env) {
     ],
     service_catalog: "https://tateprograms.com/services.json",
     paid_fix_sprint: env.FIX_SPRINT_URL || "https://tateprograms.com/x402-fix-sprint.html"
+  };
+}
+
+function a2aAgentCard(env) {
+  const paymentTargets = paymentTargetsFromEnv(env);
+  const resource = `https://the402.tateprograms.com${A2A_PATH}`;
+  const accepts = buildAtomicAccepts({
+    service: "a2a-agent-payment-surface-triage",
+    resource,
+    paymentTargets
+  });
+
+  return {
+    protocolVersion: "1.0",
+    name: "Tate Programs Agent Payment Surface Triage",
+    description: "A2A JSON-RPC endpoint for paid x402 launch triage, 402 Index health checks, and agent-skill trust checks.",
+    version: "0.1.0",
+    provider: {
+      name: env.BRAND_NAME || "Tate Programs",
+      url: env.PUBLIC_SITE || "https://tateprograms.com",
+      email: "hello@tateprograms.com"
+    },
+    supportedInterfaces: [
+      {
+        url: resource,
+        protocolBinding: "JSONRPC",
+        protocolVersion: "1.0"
+      }
+    ],
+    capabilities: {
+      streaming: false,
+      pushNotifications: false,
+      extensions: [
+        {
+          uri: A2A_X402_EXTENSION_URI,
+          required: false,
+          description: "Calls are gated at the HTTP layer with x402 before JSON-RPC execution."
+        }
+      ]
+    },
+    skills: [
+      {
+        id: "x402_launch_triage",
+        name: "x402 Launch Triage",
+        description: "Check one public manifest, paid endpoint, OpenAPI file, or discovery URL for no-payment launch readiness.",
+        tags: ["x402", "agent-payments", "launch-readiness", "cors", "resource-binding"],
+        examples: [
+          "{\"skill\":\"triage\",\"url\":\"https://api.example.com/.well-known/x402\",\"method\":\"GET\"}"
+        ]
+      },
+      {
+        id: "x402_index_watch",
+        name: "402 Index Watch",
+        description: "Search public 402 Index metadata for provider, domain, service, health, and verification signals.",
+        tags: ["x402", "402-index", "marketplace", "service-health"],
+        examples: [
+          "{\"skill\":\"index_watch\",\"q\":\"example.com\",\"protocol\":\"x402\",\"limit\":10}"
+        ]
+      },
+      {
+        id: "agent_skill_trust_check",
+        name: "Agent Skill Trust Check",
+        description: "Inspect public agent-skill text, SKILL.md files, or repo documentation before installation.",
+        tags: ["agent-skills", "openclaw", "mcp", "skill-review", "security"],
+        examples: [
+          "{\"skill\":\"skill_trust\",\"url\":\"https://github.com/example/agent-skill\"}"
+        ]
+      }
+    ],
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    documentationUrl: "https://tateprograms.com/x402-surface-check.html",
+    securitySchemes: {
+      x402Http: {
+        type: "http",
+        scheme: "x402",
+        description: "HTTP 402 challenge with USDC payment requirements before JSON-RPC execution."
+      }
+    },
+    securityRequirements: [
+      {
+        x402Http: []
+      }
+    ],
+    service_catalog: "https://the402.tateprograms.com/services",
+    "x-tate-programs-x402": {
+      price: USDC_PRICE,
+      resource,
+      networks: describePaidNetworks(paymentTargets),
+      payTo: describePayTo(paymentTargets),
+      accepts
+    }
+  };
+}
+
+async function a2aSurface(c) {
+  let payload;
+  try {
+    payload = await c.req.json();
+  } catch {
+    return json(a2aError(null, -32700, "Invalid JSON-RPC body."), { status: 400 });
+  }
+
+  const extracted = extractA2aInput(payload);
+  if (!extracted.ok) {
+    return json(a2aError(payload?.id ?? null, -32602, extracted.reason), { status: 400 });
+  }
+
+  const service = chooseA2aService(extracted);
+  const request = new Request(`https://the402.tateprograms.com${service.path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(extracted.input)
+  });
+  const response = await service.run(request);
+  const resultPayload = await readResponsePayload(response);
+
+  return json(a2aResult(payload, {
+    service: service.name,
+    status: response.status,
+    data: resultPayload
+  }), { status: response.ok ? 200 : 207 });
+}
+
+function extractA2aInput(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, reason: "Expected a JSON-RPC object." };
+  }
+
+  const params = payload.params && typeof payload.params === "object" ? payload.params : {};
+  const message = params.message && typeof params.message === "object" ? params.message : {};
+  const metadata = [
+    payload.metadata,
+    params.metadata,
+    message.metadata
+  ].find(value => value && typeof value === "object") || {};
+  const text = extractA2aText(message) || extractA2aText(params) || "";
+  const parsedText = parseLooseJson(text);
+  const input = {
+    ...(parsedText && typeof parsedText === "object" ? parsedText : {}),
+    ...(metadata.input && typeof metadata.input === "object" ? metadata.input : {}),
+    ...(params.input && typeof params.input === "object" ? params.input : {})
+  };
+  const explicitSkill = String(input.skill || metadata.skill || params.skill || "").trim();
+
+  if (!Object.keys(input).length && text) {
+    const url = firstHttpsUrl(text);
+    if (url) input.url = url;
+    else input.q = text.slice(0, 160);
+  }
+
+  if (!input.url && !input.q && !input.text && !input.skill_text) {
+    return {
+      ok: false,
+      reason: "Provide JSON input, a public URL, a 402 Index query, or skill text in the A2A message."
+    };
+  }
+
+  return {
+    ok: true,
+    input,
+    text,
+    explicitSkill
+  };
+}
+
+function extractA2aText(container) {
+  if (!container || typeof container !== "object") return "";
+  const parts = Array.isArray(container.parts) ? container.parts : [];
+  return parts
+    .map(part => {
+      if (!part || typeof part !== "object") return "";
+      return String(part.text || part.content || "").trim();
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function parseLooseJson(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function firstHttpsUrl(text) {
+  const match = String(text || "").match(/https:\/\/[^\s"'<>]+/i);
+  return match ? match[0].replace(/[),.;]+$/, "") : "";
+}
+
+function chooseA2aService(extracted) {
+  const input = extracted.input || {};
+  const skill = String(extracted.explicitSkill || "").toLowerCase().replace(/[-\s]+/g, "_");
+  const text = String(extracted.text || "").toLowerCase();
+
+  if (skill.includes("skill") || input.repo || input.skill_url || input.skill_text) {
+    return {
+      name: "agent_skill_trust_check",
+      path: SKILL_TRUST_PATH,
+      run: skillTrustSurface
+    };
+  }
+
+  if (skill.includes("index") || input.q || input.provider || input.domain || text.includes("402 index")) {
+    return {
+      name: "x402_index_watch",
+      path: INDEX_WATCH_PATH,
+      run: indexWatchSurface
+    };
+  }
+
+  return {
+    name: "x402_launch_triage",
+    path: PAID_TRIAGE_PATH,
+    run: triageSurface
+  };
+}
+
+async function readResponsePayload(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+  return {
+    body: await response.text()
+  };
+}
+
+function a2aResult(payload, output) {
+  const id = payload?.id ?? null;
+  const taskId = payload?.params?.message?.taskId || `task_${crypto.randomUUID()}`;
+  const contextId = payload?.params?.message?.contextId || `ctx_${crypto.randomUUID()}`;
+  const state = output.status >= 400 ? "failed" : "completed";
+  const text = output.status >= 400
+    ? `${output.service} returned ${output.status}.`
+    : `${output.service} completed.`;
+
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      id: taskId,
+      contextId,
+      status: {
+        state,
+        message: {
+          role: "agent",
+          parts: [
+            {
+              kind: "text",
+              text
+            }
+          ]
+        }
+      },
+      artifacts: [
+        {
+          artifactId: "result",
+          name: output.service,
+          parts: [
+            {
+              kind: "data",
+              data: output.data
+            }
+          ]
+        }
+      ],
+      metadata: {
+        service: output.service,
+        delivered_by: "Tate Programs",
+        paid_endpoint: true
+      }
+    }
+  };
+}
+
+function a2aError(id, code, message) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: {
+      code,
+      message
+    }
   };
 }
 
