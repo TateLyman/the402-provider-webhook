@@ -25,6 +25,9 @@ These are human-fulfilled, escrowed services for x402, Pay.sh, MCP, and agent-pa
 - `POST https://the402.tateprograms.com/api/provider/triage` and `/api/provider/index-watch` are proxy-marketplace upstream routes.
   They do not return x402 challenges. Instead, a marketplace such as APIHub can collect buyer payment, inject `X-Tate-Provider-Token`, forward the call, and settle payout through that marketplace.
   Use these only behind a configured `PROVIDER_PROXY_TOKEN`; public x402 buyers should use the `/api/x402/*` routes.
+- `POST https://the402.tateprograms.com/api/agent402/triage`, `/api/agent402/index-watch`, and `/api/agent402/skill-trust-check` are Agent402 upstream routes.
+  They do not return x402 challenges because Agent402 collects and verifies the buyer payment before forwarding the request.
+  Public direct buyers should use the `/api/x402/*` routes instead.
 
 The webhook verifies:
 

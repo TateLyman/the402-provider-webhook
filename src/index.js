@@ -26,6 +26,9 @@ const A2A_PATH = "/a2a";
 const PROVIDER_PROXY_TRIAGE_PATH = "/api/provider/triage";
 const PROVIDER_PROXY_INDEX_WATCH_PATH = "/api/provider/index-watch";
 const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
+const AGENT402_TRIAGE_PATH = "/api/agent402/triage";
+const AGENT402_INDEX_WATCH_PATH = "/api/agent402/index-watch";
+const AGENT402_SKILL_TRUST_PATH = "/api/agent402/skill-trust-check";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
 const A2A_X402_EXTENSION_URI = "https://github.com/google-agentic-commerce/a2a-x402/blob/main/spec/v0.2";
 const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
@@ -707,6 +710,21 @@ function providerProxyInfo(c, { name, endpoint, useMethod, description, accepted
   }, 200, JSON_HEADERS);
 }
 
+function agent402UpstreamInfo(c, { name, endpoint, useMethod, description, acceptedFields }) {
+  return c.json({
+    ok: true,
+    service: name,
+    paid: true,
+    payment_mode: "agent402_forwarded",
+    price: USDC_PRICE,
+    endpoint,
+    use_method: useMethod,
+    description,
+    accepted_fields: acceptedFields,
+    note: "For Agent402 services after Agent402 has collected and verified x402 payment. Public direct x402 buyers should use /api/x402/triage, /api/x402/index-watch, or /api/x402/skill-trust-check instead."
+  }, 200, JSON_HEADERS);
+}
+
 function providerProxyToken(env = {}) {
   return String(env.PROVIDER_PROXY_TOKEN || env.APIHUB_PROXY_TOKEN || "").trim();
 }
@@ -812,6 +830,12 @@ async function providerProxyResult(response, c, auth, service) {
     delivered_by: "Tate Programs",
     mode: "agentmint_webhook"
   }, { status: response.status });
+}
+
+function agent402UpstreamResult(response, c) {
+  response.headers.set("x-tate-programs-paid-endpoint", "agent402-upstream");
+  applyCors(response.headers, c.req.header("origin"));
+  return response;
 }
 
 function providerProxyAuthError(auth, origin) {
@@ -1102,6 +1126,52 @@ app.post(PROVIDER_PROXY_SKILL_TRUST_PATH, async c => {
   const request = providerProxyRequest(c, body, auth);
   const response = await skillTrustSurface(request);
   return providerProxyResult(response, c, auth, "agent_skill_trust_check");
+});
+
+for (const path of [AGENT402_TRIAGE_PATH, AGENT402_INDEX_WATCH_PATH, AGENT402_SKILL_TRUST_PATH]) {
+  app.options(path, c => new Response(null, {
+    status: 204,
+    headers: corsHeaders(c.req.header("origin"), "content-type,authorization,payment-signature,x-payment")
+  }));
+}
+
+app.get(AGENT402_TRIAGE_PATH, c => agent402UpstreamInfo(c, {
+  name: "Agent402 Upstream Triage API",
+  endpoint: `https://the402.tateprograms.com${AGENT402_TRIAGE_PATH}`,
+  useMethod: "POST",
+  description: "Agent402-forwarded upstream for public x402 launch triage after Agent402 payment verification.",
+  acceptedFields: ["url", "method", "origin"]
+}));
+
+app.get(AGENT402_INDEX_WATCH_PATH, c => agent402UpstreamInfo(c, {
+  name: "Agent402 Upstream Index Watch API",
+  endpoint: `https://the402.tateprograms.com${AGENT402_INDEX_WATCH_PATH}`,
+  useMethod: "POST",
+  description: "Agent402-forwarded upstream for 402 Index provider health watch after Agent402 payment verification.",
+  acceptedFields: ["q", "provider", "domain", "url", "protocol", "health", "limit"]
+}));
+
+app.get(AGENT402_SKILL_TRUST_PATH, c => agent402UpstreamInfo(c, {
+  name: "Agent402 Upstream Agent Skill Trust Check API",
+  endpoint: `https://the402.tateprograms.com${AGENT402_SKILL_TRUST_PATH}`,
+  useMethod: "POST",
+  description: "Agent402-forwarded upstream for public OpenClaw, Hermes, MCP, and SKILL.md trust checks after Agent402 payment verification.",
+  acceptedFields: ["url", "repo", "skill_url", "text", "skill_text"]
+}));
+
+app.post(AGENT402_TRIAGE_PATH, async c => {
+  const response = await triageSurface(c.req.raw);
+  return agent402UpstreamResult(response, c);
+});
+
+app.post(AGENT402_INDEX_WATCH_PATH, async c => {
+  const response = await indexWatchSurface(c.req.raw);
+  return agent402UpstreamResult(response, c);
+});
+
+app.post(AGENT402_SKILL_TRUST_PATH, async c => {
+  const response = await skillTrustSurface(c.req.raw);
+  return agent402UpstreamResult(response, c);
 });
 
 app.get("/webhook/the402", c => c.json({
