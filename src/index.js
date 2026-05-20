@@ -21,6 +21,7 @@ const USDC_ATOMIC_AMOUNT = "10000";
 const MAX_PAYMENT_TIMEOUT_SECONDS = 300;
 const PAID_TRIAGE_PATH = "/api/x402/triage";
 const INDEX_WATCH_PATH = "/api/x402/index-watch";
+const SKILL_TRUST_PATH = "/api/x402/skill-trust-check";
 const PROVIDER_PROXY_TRIAGE_PATH = "/api/provider/triage";
 const PROVIDER_PROXY_INDEX_WATCH_PATH = "/api/provider/index-watch";
 const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
@@ -232,6 +233,14 @@ const SERVICE_CATALOG = [
     network: "Base mainnet USDC"
   },
   {
+    id: "x402-skill-trust-check-api",
+    name: "Agent Skill Trust Check API",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${SKILL_TRUST_PATH}`,
+    network: "Base mainnet USDC"
+  },
+  {
     id: "provider-proxy-triage-api",
     name: "Provider Proxy Triage API",
     price_usd: 0.01,
@@ -272,6 +281,7 @@ function getPaidTriageMiddleware(env = {}) {
     const facilitator = new HTTPFacilitatorClient({ url: PAYAI_FACILITATOR_URL });
     const triageResource = `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`;
     const indexWatchResource = `https://the402.tateprograms.com${INDEX_WATCH_PATH}`;
+    const skillTrustResource = `https://the402.tateprograms.com${SKILL_TRUST_PATH}`;
     const triageConfig = () => buildPaidRouteConfig({
       service: "x402-paid-triage",
       displayName: "x402 Paid Triage API",
@@ -290,13 +300,24 @@ function getPaidTriageMiddleware(env = {}) {
       scope: "Submit a provider, domain, or service query. Returns public 402 Index health and launch-readiness signals.",
       paymentTargets
     });
+    const skillTrustConfig = () => buildPaidRouteConfig({
+      service: "agent-skill-trust-check",
+      displayName: "Agent Skill Trust Check API",
+      resource: skillTrustResource,
+      description: "Paid public-text trust check for OpenClaw, Hermes, MCP, and SKILL.md agent-skill listings before installation.",
+      discovery: SKILL_TRUST_DISCOVERY,
+      scope: "Submit a public skill URL, GitHub repo, raw SKILL.md, or pasted skill text. No install, command execution, wallet signature, private repository access, or paid upstream call is attempted.",
+      paymentTargets
+    });
 
     paidTriageMiddleware = paymentMiddlewareFromConfig(
       {
         [`GET ${PAID_TRIAGE_PATH}`]: triageConfig(),
         [`POST ${PAID_TRIAGE_PATH}`]: triageConfig(),
         [`GET ${INDEX_WATCH_PATH}`]: indexWatchConfig(),
-        [`POST ${INDEX_WATCH_PATH}`]: indexWatchConfig()
+        [`POST ${INDEX_WATCH_PATH}`]: indexWatchConfig(),
+        [`GET ${SKILL_TRUST_PATH}`]: skillTrustConfig(),
+        [`POST ${SKILL_TRUST_PATH}`]: skillTrustConfig()
       },
       facilitator,
       buildSchemes(paymentTargets),
@@ -479,7 +500,7 @@ function describePayTo(paymentTargets) {
 }
 
 function paidServiceWithEnv(service, env = {}) {
-  if (![PAID_TRIAGE_PATH, INDEX_WATCH_PATH].some(path => String(service.url || "").includes(path))) {
+  if (![PAID_TRIAGE_PATH, INDEX_WATCH_PATH, SKILL_TRUST_PATH].some(path => String(service.url || "").includes(path))) {
     return service;
   }
 
@@ -534,7 +555,7 @@ function providerProxyInfo(c, { name, endpoint, useMethod, description, accepted
       header: "X-Tate-Provider-Token",
       configured: Boolean(providerProxyToken(c.env))
     },
-    note: "For proxy marketplaces that collect payment from the buyer and forward the call with a private upstream auth header. Public x402 buyers should use /api/x402/triage or /api/x402/index-watch instead."
+    note: "For proxy marketplaces that collect payment from the buyer and forward the call with a private upstream auth header. Public x402 buyers should use /api/x402/triage, /api/x402/index-watch, or /api/x402/skill-trust-check instead."
   }, 200, JSON_HEADERS);
 }
 
@@ -661,6 +682,7 @@ app.get("/health", c => c.json({
   paid_endpoints: [
     `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
     `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
+    `https://the402.tateprograms.com${SKILL_TRUST_PATH}`,
     `https://the402.tateprograms.com${PROVIDER_PROXY_SKILL_TRUST_PATH}`
   ]
 }, 200, JSON_HEADERS));
@@ -773,11 +795,23 @@ function paidRouteDescriptor(path) {
     };
   }
 
+  if (path === SKILL_TRUST_PATH) {
+    return {
+      path: SKILL_TRUST_PATH,
+      service: "agent-skill-trust-check",
+      displayName: "Agent Skill Trust Check API",
+      description: "Paid public-text trust check for OpenClaw, Hermes, MCP, and SKILL.md agent-skill listings before installation.",
+      discovery: SKILL_TRUST_DISCOVERY,
+      scope: "Submit a public skill URL, GitHub repo, raw SKILL.md, or pasted skill text. No install, command execution, wallet signature, private repository access, or paid upstream call is attempted."
+    };
+  }
+
   return null;
 }
 
 app.use(PAID_TRIAGE_PATH, paidRouteGuard);
 app.use(INDEX_WATCH_PATH, paidRouteGuard);
+app.use(SKILL_TRUST_PATH, paidRouteGuard);
 
 app.get(PAID_TRIAGE_PATH, c => c.json(paidEndpointInfo({
   name: "x402 Paid Triage API",
@@ -797,6 +831,15 @@ app.get(INDEX_WATCH_PATH, c => c.json(paidEndpointInfo({
   paymentTargets: paymentTargetsFromEnv(c.env)
 }), 200, JSON_HEADERS));
 
+app.get(SKILL_TRUST_PATH, c => c.json(paidEndpointInfo({
+  name: "Agent Skill Trust Check API",
+  endpoint: `https://the402.tateprograms.com${SKILL_TRUST_PATH}`,
+  useMethod: "POST",
+  description: "Submit a public skill URL, GitHub repo, raw SKILL.md, or pasted skill text before installation.",
+  acceptedFields: ["url", "repo", "skill_url", "text", "skill_text"],
+  paymentTargets: paymentTargetsFromEnv(c.env)
+}), 200, JSON_HEADERS));
+
 app.post(PAID_TRIAGE_PATH, async c => {
   const response = await triageSurface(c.req.raw);
   response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
@@ -805,6 +848,12 @@ app.post(PAID_TRIAGE_PATH, async c => {
 
 app.post(INDEX_WATCH_PATH, async c => {
   const response = await indexWatchSurface(c.req.raw);
+  response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
+  return response;
+});
+
+app.post(SKILL_TRUST_PATH, async c => {
+  const response = await skillTrustSurface(c.req.raw);
   response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
   return response;
 });
@@ -1462,6 +1511,27 @@ function agentCard(env) {
             limit: {
               type: "number",
               default: 25
+            }
+          }
+        }
+      },
+      {
+        name: "agent_skill_trust_check",
+        url: `https://the402.tateprograms.com${SKILL_TRUST_PATH}`,
+        method: "POST",
+        price: "$0.01",
+        network: describePaidNetworks(paymentTargets),
+        payTo: describePayTo(paymentTargets),
+        input_schema: {
+          type: "object",
+          properties: {
+            url: {
+              type: "string",
+              description: "Public GitHub repo, raw SKILL.md, README, manifest, or skill listing URL."
+            },
+            text: {
+              type: "string",
+              description: "Optional pasted skill text when no URL is supplied."
             }
           }
         }
