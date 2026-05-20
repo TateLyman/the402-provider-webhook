@@ -29,6 +29,34 @@ const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
 const A2A_X402_EXTENSION_URI = "https://github.com/google-agentic-commerce/a2a-x402/blob/main/spec/v0.2";
 const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
+const PUBLIC_MARKETPLACE_ORIGINS = new Set([
+  "agora402.io",
+  "www.agora402.io",
+  "a2alist.ai",
+  "www.a2alist.ai",
+  "agensi.io",
+  "www.agensi.io",
+  "agent402.app",
+  "marketplace.agent402.app",
+  "apihub.io",
+  "www.apihub.io",
+  "clawmart.co",
+  "www.clawmart.co",
+  "clawdmkt.com",
+  "www.clawdmkt.com",
+  "claw402.ai",
+  "www.claw402.ai",
+  "orkai.ai",
+  "www.orkai.ai",
+  "paperclipskills.com",
+  "www.paperclipskills.com",
+  "payanagent.com",
+  "www.payanagent.com",
+  "the402.ai",
+  "www.the402.ai",
+  "x402-agent-pay.com",
+  "www.x402-agent-pay.com"
+]);
 
 const ALLOWED_EVENT_TYPES = new Set([
   "job_dispatch",
@@ -2425,11 +2453,28 @@ function corsHeaders(origin, allowHeaders = "content-type,x-payment,payment-sign
 }
 
 function applyCors(headers, origin) {
-  const allowedOrigin = origin && /^https:\/\/([a-z0-9-]+\.)?tateprograms\.com$/i.test(origin)
-    ? origin
-    : "https://tateprograms.com";
+  const allowedOrigin = allowedCorsOrigin(origin);
   headers.set("access-control-allow-origin", allowedOrigin);
   headers.append("vary", "Origin");
+}
+
+function allowedCorsOrigin(origin) {
+  if (!origin) return "https://tateprograms.com";
+
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname.toLowerCase();
+    if (url.protocol === "https:" && /^([a-z0-9-]+\.)?tateprograms\.com$/i.test(hostname)) {
+      return origin;
+    }
+    if (url.protocol === "https:" && PUBLIC_MARKETPLACE_ORIGINS.has(hostname)) {
+      return origin;
+    }
+  } catch {
+    return "https://tateprograms.com";
+  }
+
+  return "https://tateprograms.com";
 }
 
 function json(payload, init = {}) {
