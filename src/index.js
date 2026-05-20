@@ -68,6 +68,7 @@ const ALLOWED_EVENT_TYPES = new Set([
 ]);
 
 const TRIAGE_DISCOVERY = declareDiscoveryExtension({
+  method: "POST",
   input: {
     url: "https://api.example.com/.well-known/x402",
     method: "GET",
@@ -126,6 +127,7 @@ const TRIAGE_DISCOVERY = declareDiscoveryExtension({
 });
 
 const INDEX_WATCH_DISCOVERY = declareDiscoveryExtension({
+  method: "POST",
   input: {
     q: "example.com",
     protocol: "x402",
@@ -178,6 +180,7 @@ const INDEX_WATCH_DISCOVERY = declareDiscoveryExtension({
 });
 
 const SKILL_TRUST_DISCOVERY = declareDiscoveryExtension({
+  method: "POST",
   input: {
     url: "https://github.com/example/agent-skill",
     format: "repo-or-skill-md"
@@ -218,6 +221,7 @@ const SKILL_TRUST_DISCOVERY = declareDiscoveryExtension({
 });
 
 const A2A_DISCOVERY = declareDiscoveryExtension({
+  method: "POST",
   input: {
     message: {
       role: "user",
