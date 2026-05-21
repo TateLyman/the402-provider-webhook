@@ -1309,8 +1309,8 @@ app.options(UCP_READINESS_PATH, c => new Response(null, {
   headers: corsHeaders(c.req.header("origin"), "content-type")
 }));
 
-app.get(UCP_READINESS_PATH, c => c.json(ucpReadinessInfo(), 200, JSON_HEADERS));
-app.post(UCP_READINESS_PATH, c => ucpReadinessSnapshot(c.req.raw));
+app.get(UCP_READINESS_PATH, c => ucpJson(ucpReadinessInfo(), c.req.header("origin")));
+app.post(UCP_READINESS_PATH, c => ucpReadinessSnapshot(c.req.raw, c.req.header("origin")));
 
 async function paidRouteGuard(c, next) {
   if (c.req.method === "OPTIONS") {
@@ -1817,6 +1817,13 @@ async function tools402ReadinessSnapshot(request) {
   });
 }
 
+function ucpJson(payload, origin, status = 200) {
+  return json(payload, {
+    status,
+    headers: Object.fromEntries(corsHeaders(origin, "content-type"))
+  });
+}
+
 function ucpReadinessInfo() {
   return {
     ok: true,
@@ -1838,24 +1845,24 @@ function ucpReadinessInfo() {
   };
 }
 
-async function ucpReadinessSnapshot(request) {
+async function ucpReadinessSnapshot(request, requestOrigin) {
   let input;
   try {
     input = await request.json();
   } catch {
-    return json({ error: "invalid_json" }, { status: 400 });
+    return ucpJson({ error: "invalid_json" }, requestOrigin, 400);
   }
 
   const rawTarget = String(input.url || input.domain || input.store || "").trim();
   const normalizedTarget = rawTarget && !/^https?:\/\//i.test(rawTarget) ? `https://${rawTarget}` : rawTarget;
   const safe = validatePublicHttpsUrl(normalizedTarget);
   if (!safe.ok) {
-    return json({
+    return ucpJson({
       ok: false,
       service: "Tate Programs Universal Cart and UCP readiness snapshot",
       error: safe.reason,
       next_step: "Send a public HTTPS merchant, product, storefront, or agentic commerce demo URL."
-    }, { status: 400 });
+    }, requestOrigin, 400);
   }
 
   const base = new URL(normalizedTarget);
@@ -1880,7 +1887,7 @@ async function ucpReadinessSnapshot(request) {
   const findings = buildUcpReadinessFindings({ ucp, llms, agents, sitemap, schemaSignals, platformSignals });
   const score = scoreUcpReadiness({ ucp, llms, agents, sitemap, schemaSignals, platformSignals });
 
-  return json({
+  return ucpJson({
     ok: true,
     service: "Tate Programs Universal Cart and UCP readiness snapshot",
     checked_at: new Date().toISOString(),
@@ -1900,7 +1907,7 @@ async function ucpReadinessSnapshot(request) {
       email: "hello@tateprograms.com"
     },
     scope: "Public no-payment discovery only. No login, account creation, cart mutation, checkout attempt, payment, private endpoint guessing, or order lookup."
-  });
+  }, requestOrigin);
 }
 
 async function fetchUcpCandidate(candidate) {
