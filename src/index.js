@@ -10,6 +10,11 @@ const JSON_HEADERS = {
   "cache-control": "no-store"
 };
 
+const HTML_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-store"
+};
+
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 const SOLANA_USDC_ASSET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SOLANA_FEE_PAYER = "2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4";
@@ -496,6 +501,8 @@ function buildPaymentRequiredBody({ service, displayName, resource, description,
     code: "payment_required",
     service: displayName,
     price: USDC_PRICE,
+    facilitator: PAYAI_FACILITATOR_URL,
+    facilitator_url: PAYAI_FACILITATOR_URL,
     resource: {
       url: resource,
       description,
@@ -512,11 +519,16 @@ function buildPaymentRequiredBody({ service, displayName, resource, description,
 }
 
 function buildAtomicAccepts({ service, resource, paymentTargets }) {
+  const route = routeDescriptorForResource(service, resource);
   const commonExtra = {
     provider: "Tate Programs",
     category: "agent-payments",
+    name: route.displayName,
     service,
-    resource
+    resource,
+    facilitator: PAYAI_FACILITATOR_URL,
+    ownerUrl: "https://tateprograms.com",
+    contactEmail: "hello@tateprograms.com"
   };
   const accepts = [];
 
@@ -525,10 +537,14 @@ function buildAtomicAccepts({ service, resource, paymentTargets }) {
       scheme: "exact",
       network: BASE_MAINNET,
       amount: USDC_ATOMIC_AMOUNT,
+      maxAmountRequired: USDC_ATOMIC_AMOUNT,
       asset: BASE_USDC_ASSET,
       payTo: paymentTargets.basePayTo,
       maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
       resource,
+      description: route.description,
+      mimeType: "application/json",
+      outputSchema: null,
       extra: {
         name: "USD Coin",
         version: "2",
@@ -542,10 +558,14 @@ function buildAtomicAccepts({ service, resource, paymentTargets }) {
       scheme: "exact",
       network: SOLANA_MAINNET,
       amount: USDC_ATOMIC_AMOUNT,
+      maxAmountRequired: USDC_ATOMIC_AMOUNT,
       asset: SOLANA_USDC_ASSET,
       payTo: paymentTargets.solanaPayTo,
       maxTimeoutSeconds: MAX_PAYMENT_TIMEOUT_SECONDS,
       resource,
+      description: route.description,
+      mimeType: "application/json",
+      outputSchema: null,
       extra: {
         ...commonExtra,
         feePayer: SOLANA_FEE_PAYER
@@ -645,6 +665,8 @@ function x402Manifest(env = {}) {
   const paidRoutes = [PAID_TRIAGE_PATH, INDEX_WATCH_PATH, SKILL_TRUST_PATH, A2A_PATH]
     .map(path => paidRouteDescriptor(path))
     .filter(Boolean);
+  const endpoints = paidRoutes.map(route => x402EndpointDescriptor(route, paymentTargets));
+  const generatedAt = new Date().toISOString();
 
   return {
     x402Version: 2,
@@ -652,32 +674,402 @@ function x402Manifest(env = {}) {
     description: "Paid public-surface checks for x402, MPP, Pay.sh, A2A, and agent-skill launch readiness.",
     version: "1.0.0",
     provider: env.BRAND_NAME || "Tate Programs",
+    owner_url: "https://tateprograms.com",
+    contact_email: "hello@tateprograms.com",
+    category: "agent-commerce-readiness",
     base_url: "https://the402.tateprograms.com",
     facilitator: PAYAI_FACILITATOR_URL,
+    facilitator_url: PAYAI_FACILITATOR_URL,
+    generated_at: generatedAt,
+    updated_at: generatedAt,
+    dateModified: generatedAt,
     networks: describePaidNetworks(paymentTargets),
     pay_to: describePayTo(paymentTargets),
-    endpoints: paidRoutes.map(route => {
-      const resource = `https://the402.tateprograms.com${route.path}`;
-      return {
-        method: "POST",
-        path: route.path,
-        name: route.displayName,
-        description: route.description,
-        price_usd: 0.01,
-        accepts: buildAtomicAccepts({
-          service: route.service,
-          resource,
-          paymentTargets
-        }),
-        extensions: {
-          ...route.discovery
-        }
-      };
-    }),
+    endpoints,
+    services: endpoints,
+    payment_requirements: endpoints.map(endpoint => ({
+      resource: endpoint.resource,
+      accepts: endpoint.accepts
+    })),
     agent_card_url: "https://the402.tateprograms.com/.well-known/agent.json",
+    openapi_url: "https://the402.tateprograms.com/openapi.json",
+    homepage_url: "https://the402.tateprograms.com/",
     docs_url: "https://tateprograms.com/x402-surface-check.html",
+    marketplace: {
+      category: "agent-commerce-readiness",
+      audience: ["x402 publishers", "agent-payment teams", "marketplace operators"],
+      private_report_path: "https://tateprograms.com/agent-commerce-readiness-sprint.html"
+    },
+    bazaar: {
+      name: "Tate Programs x402 Surface Checks",
+      description: "Paid public-surface checks for x402, MPP, Pay.sh, A2A, and agent-skill launch readiness.",
+      category: "agent-commerce-readiness",
+      tags: ["x402", "agent-payments", "mpp", "a2a", "skill-trust", "launch-readiness"],
+      owner_url: "https://tateprograms.com",
+      contact_email: "hello@tateprograms.com"
+    },
     tags: ["x402", "agent-payments", "mpp", "a2a", "skill-trust", "launch-readiness"]
   };
+}
+
+function x402EndpointDescriptor(route, paymentTargets) {
+  const resource = `https://the402.tateprograms.com${route.path}`;
+  return {
+    id: route.service,
+    method: "POST",
+    path: route.path,
+    url: resource,
+    resource: {
+      url: resource,
+      description: route.description,
+      mimeType: "application/json",
+      serviceName: route.displayName,
+      tags: ["x402", "agent-payments", "launch-readiness"]
+    },
+    name: route.displayName,
+    description: route.description,
+    price: USDC_PRICE,
+    price_usd: 0.01,
+    category: "agent-commerce-readiness",
+    tags: ["x402", "agent-payments", "launch-readiness"],
+    owner_url: "https://tateprograms.com",
+    contact_email: "hello@tateprograms.com",
+    facilitator: PAYAI_FACILITATOR_URL,
+    facilitator_url: PAYAI_FACILITATOR_URL,
+    network: describePaidNetworks(paymentTargets),
+    payTo: describePayTo(paymentTargets),
+    accepts: buildAtomicAccepts({
+      service: route.service,
+      resource,
+      paymentTargets
+    }),
+    extensions: {
+      ...route.discovery
+    }
+  };
+}
+
+function openApiSpec(env = {}) {
+  const paymentTargets = paymentTargetsFromEnv(env);
+  const paymentDescription = `x402 HTTP 402 challenge. Base USDC payTo: ${paymentTargets.basePayTo || "configured by environment"}.`;
+
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "Tate Programs Agent-Commerce Readiness API",
+      version: "1.0.0",
+      description: "Paid and free public-surface checks for x402, MPP, Pay.sh, A2A, and agent-skill launches."
+    },
+    servers: [
+      {
+        url: "https://the402.tateprograms.com",
+        description: "Production"
+      }
+    ],
+    tags: [
+      { name: "free", description: "No-payment public triage." },
+      { name: "paid", description: "x402-gated paid endpoints." },
+      { name: "discovery", description: "Machine-readable marketplace discovery." }
+    ],
+    paths: {
+      "/": {
+        get: {
+          tags: ["discovery"],
+          summary: "Provider overview",
+          responses: {
+            "200": { description: "HTML provider overview." }
+          }
+        }
+      },
+      "/.well-known/x402.json": {
+        get: {
+          tags: ["discovery"],
+          summary: "x402 service manifest",
+          responses: {
+            "200": {
+              description: "Machine-readable paid endpoint manifest.",
+              content: {
+                "application/json": {
+                  schema: { type: "object" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/.well-known/agent.json": {
+        get: {
+          tags: ["discovery"],
+          summary: "A2A agent card",
+          responses: {
+            "200": {
+              description: "A2A agent card with x402 payment metadata.",
+              content: {
+                "application/json": {
+                  schema: { type: "object" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/triage": {
+        post: {
+          tags: ["free"],
+          summary: "No-payment x402 surface triage",
+          requestBody: requestBodySchema(triageInputSchema()),
+          responses: {
+            "200": responseSchema("Public surface triage result."),
+            "400": errorResponseSchema()
+          }
+        }
+      },
+      [PAID_TRIAGE_PATH]: paidPathSpec(
+        "Paid x402 surface triage",
+        "Returns payment-gated readiness checks for one public x402 or agent-payment surface.",
+        triageInputSchema()
+      ),
+      [INDEX_WATCH_PATH]: paidPathSpec(
+        "Paid 402 Index watch",
+        "Returns public 402 Index health and launch-readiness signals for a provider, domain, or service query.",
+        indexWatchInputSchema()
+      ),
+      [SKILL_TRUST_PATH]: paidPathSpec(
+        "Paid agent skill trust check",
+        "Inspects public agent-skill text or documentation before installation.",
+        skillTrustInputSchema()
+      ),
+      [A2A_PATH]: paidPathSpec(
+        "Paid A2A agent-payment surface triage",
+        "A2A JSON-RPC endpoint for triage, index watch, and skill trust checks.",
+        a2aInputSchema()
+      )
+    },
+    components: {
+      securitySchemes: {
+        x402: {
+          type: "http",
+          scheme: "x402",
+          description: paymentDescription
+        }
+      },
+      schemas: {
+        PaymentRequired: {
+          type: "object",
+          required: ["x402Version", "resource", "accepts"],
+          properties: {
+            x402Version: { type: "integer", enum: [2] },
+            error: { type: "string" },
+            resource: { type: "object" },
+            accepts: { type: "array", items: { type: "object" } },
+            extensions: { type: "object" }
+          }
+        }
+      }
+    },
+    "x-tate-programs": {
+      manifest: "https://the402.tateprograms.com/.well-known/x402.json",
+      sales: "https://tateprograms.com/agent-commerce-readiness-sprint.html",
+      scope: "Public/no-payment checks unless a customer explicitly supplies test fixtures."
+    }
+  };
+}
+
+function paidPathSpec(summary, description, schema) {
+  return {
+    post: {
+      tags: ["paid"],
+      summary,
+      description,
+      security: [{ x402: [] }],
+      requestBody: requestBodySchema(schema),
+      responses: {
+        "200": responseSchema("Paid check result."),
+        "402": {
+          description: "x402 payment challenge.",
+          headers: {
+            "Payment-Required": {
+              schema: { type: "string" },
+              description: "Base64-encoded x402 payment requirements."
+            }
+          },
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/PaymentRequired" }
+            }
+          }
+        },
+        "400": errorResponseSchema()
+      }
+    }
+  };
+}
+
+function requestBodySchema(schema) {
+  return {
+    required: true,
+    content: {
+      "application/json": {
+        schema
+      }
+    }
+  };
+}
+
+function responseSchema(description) {
+  return {
+    description,
+    content: {
+      "application/json": {
+        schema: { type: "object" }
+      }
+    }
+  };
+}
+
+function errorResponseSchema() {
+  return {
+    description: "Request validation error.",
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          properties: {
+            error: { type: "string" }
+          }
+        }
+      }
+    }
+  };
+}
+
+function triageInputSchema() {
+  return {
+    type: "object",
+    required: ["url"],
+    properties: {
+      url: { type: "string", format: "uri" },
+      method: { type: "string", enum: ["GET", "POST", "OPTIONS"], default: "GET" },
+      origin: { type: "string", format: "uri" }
+    }
+  };
+}
+
+function indexWatchInputSchema() {
+  return {
+    type: "object",
+    required: ["q"],
+    properties: {
+      q: { type: "string" },
+      protocol: { type: "string", enum: ["x402", "L402", "MPP"], default: "x402" },
+      health: { type: "string", enum: ["healthy", "degraded", "down", "unknown"] },
+      limit: { type: "number", minimum: 1, maximum: 50, default: 25 }
+    }
+  };
+}
+
+function skillTrustInputSchema() {
+  return {
+    type: "object",
+    properties: {
+      url: { type: "string", format: "uri" },
+      text: { type: "string" }
+    }
+  };
+}
+
+function a2aInputSchema() {
+  return {
+    type: "object",
+    properties: {
+      jsonrpc: { type: "string", default: "2.0" },
+      method: { type: "string" },
+      params: { type: "object" },
+      id: {}
+    }
+  };
+}
+
+function providerHomeHtml(env = {}) {
+  const manifest = x402Manifest(env);
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ProfessionalService",
+    name: "Tate Programs",
+    url: "https://the402.tateprograms.com/",
+    email: "hello@tateprograms.com",
+    serviceType: "Agent-commerce readiness checks",
+    areaServed: "Worldwide",
+    hasOfferCatalog: {
+      "@type": "OfferCatalog",
+      name: "Agent-commerce readiness API",
+      itemListElement: manifest.endpoints.map(endpoint => ({
+        "@type": "Offer",
+        name: endpoint.name,
+        price: "0.01",
+        priceCurrency: "USD",
+        url: endpoint.url,
+        itemOffered: {
+          "@type": "Service",
+          name: endpoint.name,
+          description: endpoint.description
+        }
+      }))
+    }
+  };
+  const rows = manifest.endpoints
+    .map(endpoint => `<tr><td>${escapeHtml(endpoint.name)}</td><td><code>${escapeHtml(endpoint.path)}</code></td><td>${escapeHtml(endpoint.price)}</td></tr>`)
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tate Programs x402 Readiness API</title>
+  <meta name="description" content="Paid public-surface checks for x402, A2A, agent-payment, and agent-skill launch readiness.">
+  <link rel="canonical" href="https://the402.tateprograms.com/">
+  <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
+  <style>
+    :root { color-scheme: dark; background: #090b0a; color: #f4f0e8; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 32px; }
+    main { width: min(920px, 100%); }
+    h1 { font-size: clamp(28px, 5vw, 58px); line-height: 0.95; margin: 0 0 18px; letter-spacing: 0; }
+    p { color: #c9c2b7; line-height: 1.55; max-width: 760px; }
+    a { color: #64f0be; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 28px 0; }
+    .links a { border: 1px solid #2a3b34; border-radius: 6px; padding: 10px 12px; color: #f4f0e8; text-decoration: none; }
+    table { width: 100%; border-collapse: collapse; margin-top: 28px; background: #0f1412; border: 1px solid #26332d; }
+    th, td { text-align: left; padding: 12px; border-bottom: 1px solid #26332d; vertical-align: top; }
+    th { color: #64f0be; font-weight: 700; }
+    code { color: #ffe0a3; font-size: 0.92em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>x402 readiness API</h1>
+    <p>Tate Programs runs narrow paid checks for agent-commerce launches: payment challenge shape, discovery metadata, browser readability, index health, and install-time skill risk. Public no-payment triage is available; paid endpoints return an x402 challenge before execution.</p>
+    <div class="links">
+      <a href="/.well-known/x402.json">x402 manifest</a>
+      <a href="/openapi.json">OpenAPI</a>
+      <a href="/.well-known/agent.json">A2A card</a>
+      <a href="https://tateprograms.com/agent-commerce-readiness-sprint.html">Readiness sprint</a>
+    </div>
+    <table>
+      <thead><tr><th>Service</th><th>Path</th><th>Price</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </main>
+</body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function providerProxyInfo(c, { name, endpoint, useMethod, description, acceptedFields }) {
@@ -847,6 +1239,26 @@ function providerProxyAuthError(auth, origin) {
   });
 }
 
+app.get("/", c => new Response(providerHomeHtml(c.env), {
+  status: 200,
+  headers: HTML_HEADERS
+}));
+
+app.get("/robots.txt", () => new Response([
+  "User-agent: *",
+  "Allow: /",
+  "Sitemap: https://tateprograms.com/sitemap.xml"
+].join("\n"), {
+  status: 200,
+  headers: {
+    "content-type": "text/plain; charset=utf-8",
+    "cache-control": "no-store"
+  }
+}));
+
+app.get("/openapi.json", c => c.json(openApiSpec(c.env), 200, JSON_HEADERS));
+app.get("/.well-known/openapi.json", c => c.json(openApiSpec(c.env), 200, JSON_HEADERS));
+
 app.get("/health", c => c.json({
   ok: true,
   service: "tateprograms-the402-provider",
@@ -867,6 +1279,7 @@ app.get("/services", c => c.json({
 app.get("/.well-known/agent-card.json", c => c.json(agentCard(c.env), 200, JSON_HEADERS));
 app.get("/.well-known/agent.json", c => c.json(a2aAgentCard(c.env), 200, JSON_HEADERS));
 app.get("/.well-known/x402", c => c.json(x402Manifest(c.env), 200, JSON_HEADERS));
+app.get("/.well-known/x402.json", c => c.json(x402Manifest(c.env), 200, JSON_HEADERS));
 
 app.get("/.well-known/402index-verify.txt", c => new Response(INDEX_402_VERIFICATION_HASH, {
   status: 200,
@@ -992,6 +1405,22 @@ function paidRouteDescriptor(path) {
   }
 
   return null;
+}
+
+function routeDescriptorForResource(service, resource) {
+  try {
+    const route = paidRouteDescriptor(new URL(resource).pathname);
+    if (route) return route;
+  } catch {
+    // Fall through to a generic descriptor for non-URL resources.
+  }
+
+  return {
+    path: "",
+    service,
+    displayName: String(service || "Paid Readiness Check"),
+    description: "Paid public-surface readiness check for an agent-commerce launch."
+  };
 }
 
 app.use(PAID_TRIAGE_PATH, paidRouteGuard);
