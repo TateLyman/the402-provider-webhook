@@ -1837,6 +1837,8 @@ function ucpReadinessInfo() {
     output: [
       "well-known UCP profile status",
       "agent-readable docs status",
+      "UCP MCP endpoint status",
+      "agentic discovery sitemap status",
       "homepage commerce schema hints",
       "catalog/cart/checkout/order risk notes",
       "fixed-scope paid proof path"
@@ -1871,21 +1873,27 @@ async function ucpReadinessSnapshot(request, requestOrigin) {
     { id: "homepage", url: normalizedTarget, kind: "homepage" },
     { id: "ucp_profile", url: new URL("/.well-known/ucp", origin).toString(), kind: "ucp" },
     { id: "llms_txt", url: new URL("/llms.txt", origin).toString(), kind: "agent_docs" },
+    { id: "llms_full_txt", url: new URL("/llms-full.txt", origin).toString(), kind: "agent_docs" },
     { id: "agents_md", url: new URL("/agents.md", origin).toString(), kind: "agent_docs" },
+    { id: "ucp_mcp", url: new URL("/api/ucp/mcp", origin).toString(), kind: "mcp" },
     { id: "robots_txt", url: new URL("/robots.txt", origin).toString(), kind: "agent_docs" },
-    { id: "sitemap_xml", url: new URL("/sitemap.xml", origin).toString(), kind: "discovery" }
+    { id: "sitemap_xml", url: new URL("/sitemap.xml", origin).toString(), kind: "discovery" },
+    { id: "agentic_sitemap", url: new URL("/sitemap_agentic_discovery.xml", origin).toString(), kind: "discovery" }
   ];
 
   const checks = await Promise.all(candidates.map(fetchUcpCandidate));
   const homepage = checks.find(check => check.id === "homepage");
   const ucp = checks.find(check => check.id === "ucp_profile");
   const llms = checks.find(check => check.id === "llms_txt");
+  const llmsFull = checks.find(check => check.id === "llms_full_txt");
   const agents = checks.find(check => check.id === "agents_md");
+  const mcp = checks.find(check => check.id === "ucp_mcp");
   const sitemap = checks.find(check => check.id === "sitemap_xml");
+  const agenticSitemap = checks.find(check => check.id === "agentic_sitemap");
   const schemaSignals = summarizeCommerceSchema(homepage?.body || "");
   const platformSignals = summarizeMerchantPlatform(homepage, checks);
-  const findings = buildUcpReadinessFindings({ ucp, llms, agents, sitemap, schemaSignals, platformSignals });
-  const score = scoreUcpReadiness({ ucp, llms, agents, sitemap, schemaSignals, platformSignals });
+  const findings = buildUcpReadinessFindings({ ucp, llms, llmsFull, agents, mcp, sitemap, agenticSitemap, schemaSignals, platformSignals });
+  const score = scoreUcpReadiness({ ucp, llms, llmsFull, agents, mcp, sitemap, agenticSitemap, schemaSignals, platformSignals });
 
   return ucpJson({
     ok: true,
@@ -1914,21 +1922,27 @@ async function fetchUcpCandidate(candidate) {
   const started = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), 5000);
+  const isMcpListProbe = candidate.id === "ucp_mcp";
   try {
     const response = await fetch(candidate.url, {
-      method: "GET",
+      method: isMcpListProbe ? "POST" : "GET",
       headers: {
         accept: candidate.id === "homepage"
           ? "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.2"
-          : "application/json,text/plain,text/markdown,application/xml,text/xml,*/*;q=0.2",
+          : "application/json,application/xml,text/xml,text/plain,text/markdown,*/*;q=0.2",
+        ...(isMcpListProbe ? { "content-type": "application/json" } : {}),
         "user-agent": "TatePrograms-UCP-Readiness/1.0 (+https://tateprograms.com/universal-cart-readiness.html)"
       },
+      body: isMcpListProbe
+        ? JSON.stringify({ jsonrpc: "2.0", id: "tate-ucp-readiness", method: "tools/list", params: {} })
+        : undefined,
       redirect: "follow",
       signal: controller.signal
     });
     const raw = await response.text();
     return {
       ...candidate,
+      method: isMcpListProbe ? "POST" : "GET",
       ok: response.ok,
       status: response.status,
       elapsed_ms: Date.now() - started,
@@ -1940,6 +1954,7 @@ async function fetchUcpCandidate(candidate) {
   } catch (error) {
     return {
       ...candidate,
+      method: isMcpListProbe ? "POST" : "GET",
       ok: false,
       status: "fetch_failed",
       elapsed_ms: Date.now() - started,
@@ -1958,6 +1973,7 @@ function compactUcpCheck(check) {
   const body = check.body || "";
   return {
     id: check.id,
+    method: check.method || "GET",
     url: check.url,
     final_url: check.final_url,
     ok: Boolean(check.ok),
@@ -2002,24 +2018,40 @@ function summarizeMerchantPlatform(homepage, checks) {
   const headers = `${homepage?.content_type || ""} ${homepage?.cache_control || ""}`;
   const ucp = checks.find(check => check.id === "ucp_profile");
   const llms = checks.find(check => check.id === "llms_txt");
+  const llmsFull = checks.find(check => check.id === "llms_full_txt");
   const agents = checks.find(check => check.id === "agents_md");
+  const mcp = checks.find(check => check.id === "ucp_mcp");
+  const agenticSitemap = checks.find(check => check.id === "agentic_sitemap");
 
   return {
     likely_shopify: /Shopify|cdn\.shopify\.com|myshopify|Shopify\.theme|shopify-section/i.test(body),
     has_ucp_profile: Boolean(ucp?.ok),
-    has_agent_docs: Boolean(llms?.ok || agents?.ok),
+    has_agent_docs: Boolean(llms?.ok || llmsFull?.ok || agents?.ok),
+    has_ucp_mcp: isReachablePublicCheck(mcp),
+    ucp_mcp_status: mcp?.status || null,
+    has_agentic_sitemap: Boolean(agenticSitemap?.ok),
     homepage_cache_policy: homepage?.cache_control || null,
     homepage_content_type: homepage?.content_type || headers || null
   };
 }
 
-function scoreUcpReadiness({ ucp, llms, agents, sitemap, schemaSignals, platformSignals }) {
+function isReachablePublicCheck(check) {
+  if (!check || check.status === "fetch_failed") return false;
+  const status = Number(check.status);
+  return Number.isFinite(status) && status < 500;
+}
+
+function scoreUcpReadiness({ ucp, llms, llmsFull, agents, mcp, sitemap, agenticSitemap, schemaSignals, platformSignals }) {
   let score = 10;
   if (platformSignals.likely_shopify) score += 10;
-  if (ucp?.ok) score += 25;
+  if (ucp?.ok) score += 20;
+  if (mcp?.ok) score += 15;
+  else if (isReachablePublicCheck(mcp)) score += 6;
   if (llms?.ok) score += 10;
+  if (llmsFull?.ok) score += 5;
   if (agents?.ok) score += 10;
   if (sitemap?.ok) score += 5;
+  if (agenticSitemap?.ok) score += 8;
   if (schemaSignals.product_schema) score += 10;
   if (schemaSignals.offer_schema) score += 8;
   if (schemaSignals.merchant_return_policy) score += 8;
@@ -2028,7 +2060,7 @@ function scoreUcpReadiness({ ucp, llms, agents, sitemap, schemaSignals, platform
   return Math.max(0, Math.min(score, 100));
 }
 
-function buildUcpReadinessFindings({ ucp, llms, agents, sitemap, schemaSignals, platformSignals }) {
+function buildUcpReadinessFindings({ ucp, llms, llmsFull, agents, mcp, sitemap, agenticSitemap, schemaSignals, platformSignals }) {
   const findings = [];
 
   if (ucp?.ok) {
@@ -2037,10 +2069,22 @@ function buildUcpReadinessFindings({ ucp, llms, agents, sitemap, schemaSignals, 
     findings.push("No public `/.well-known/ucp` profile was found from this no-login check.");
   }
 
-  if (llms?.ok || agents?.ok) {
-    findings.push("At least one agent-readable docs surface (`llms.txt` or `agents.md`) was found.");
+  if (llms?.ok || llmsFull?.ok || agents?.ok) {
+    findings.push("At least one agent-readable docs surface (`llms.txt`, `llms-full.txt`, or `agents.md`) was found.");
   } else {
-    findings.push("No `llms.txt` or `agents.md` agent-doc surface was found.");
+    findings.push("No `llms.txt`, `llms-full.txt`, or `agents.md` agent-doc surface was found.");
+  }
+
+  if (mcp?.ok) {
+    findings.push("A public UCP MCP endpoint accepted the safe `tools/list` probe at `/api/ucp/mcp`.");
+  } else if (isReachablePublicCheck(mcp)) {
+    findings.push("A public UCP MCP endpoint responded at `/api/ucp/mcp`, but the safe `tools/list` probe did not return HTTP 200.");
+  } else {
+    findings.push("No public UCP MCP endpoint was reachable at `/api/ucp/mcp`.");
+  }
+
+  if (agenticSitemap?.ok) {
+    findings.push("An agentic discovery sitemap was reachable at `/sitemap_agentic_discovery.xml`.");
   }
 
   if (!schemaSignals.product_schema) {
