@@ -28,6 +28,7 @@ const PAID_TRIAGE_PATH = "/api/x402/triage";
 const INDEX_WATCH_PATH = "/api/x402/index-watch";
 const SKILL_TRUST_PATH = "/api/x402/skill-trust-check";
 const A2A_PATH = "/a2a";
+const TOOLS402_READINESS_PATH = "/api/tools402/readiness-snapshot";
 const PROVIDER_PROXY_TRIAGE_PATH = "/api/provider/triage";
 const PROVIDER_PROXY_INDEX_WATCH_PATH = "/api/provider/index-watch";
 const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
@@ -62,6 +63,9 @@ const PUBLIC_MARKETPLACE_ORIGINS = new Set([
   "www.payanagent.com",
   "the402.ai",
   "www.the402.ai",
+  "tools402.dev",
+  "www.tools402.dev",
+  "api.tools402.dev",
   "x402-agent-pay.com",
   "www.x402-agent-pay.com"
 ]);
@@ -1291,6 +1295,14 @@ app.get("/.well-known/402index-verify.txt", c => new Response(INDEX_402_VERIFICA
 
 app.post("/api/triage", c => triageSurface(c.req.raw));
 
+app.options(TOOLS402_READINESS_PATH, c => new Response(null, {
+  status: 204,
+  headers: corsHeaders(c.req.header("origin"), "content-type")
+}));
+
+app.get(TOOLS402_READINESS_PATH, c => c.json(tools402ReadinessInfo(), 200, JSON_HEADERS));
+app.post(TOOLS402_READINESS_PATH, c => tools402ReadinessSnapshot(c.req.raw));
+
 async function paidRouteGuard(c, next) {
   if (c.req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) });
@@ -1708,6 +1720,92 @@ async function triageSurface(request) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function tools402ReadinessInfo() {
+  return {
+    ok: true,
+    service: "Tate Programs x402 and agent-commerce readiness snapshot",
+    endpoint: `https://the402.tateprograms.com${TOOLS402_READINESS_PATH}`,
+    method: "POST",
+    inputs: {
+      optional_url: "Public HTTPS x402, MPP, UCP, MCP, A2A, OpenAPI, or paid endpoint URL.",
+      optional_method: "GET, POST, or OPTIONS. Defaults to GET.",
+      optional_origin: "Browser origin to test CORS behavior."
+    },
+    output: [
+      "safe no-payment surface summary",
+      "payment/discovery header notes when a URL is provided",
+      "browser-readability and retry notes",
+      "fixed-scope paid review path"
+    ],
+    proof: [
+      "https://tateprograms.com/case-studies.html",
+      "https://tateprograms.com/agent-commerce-readiness-sprint.html"
+    ],
+    scope: "Public no-payment checks only. No wallet signature, payment header, private endpoint guessing, account login, or paid upstream call."
+  };
+}
+
+async function tools402ReadinessSnapshot(request) {
+  let input = {};
+  try {
+    input = await request.json();
+  } catch {
+    input = {};
+  }
+
+  const target = String(input.url || input.surface_url || input.endpoint || "").trim();
+  if (!target) {
+    return json({
+      ...tools402ReadinessInfo(),
+      mode: "probe_or_instructions",
+      checked_at: new Date().toISOString(),
+      next_step: "Send {\"url\":\"https://example.com/.well-known/x402\"} for a public no-payment readiness snapshot."
+    });
+  }
+
+  const safe = validatePublicHttpsUrl(target);
+  if (!safe.ok) {
+    return json({
+      ok: false,
+      service: "Tate Programs x402 and agent-commerce readiness snapshot",
+      checked_at: new Date().toISOString(),
+      error: safe.reason,
+      next_step: "Send a public HTTPS URL. Private hosts, localhost, IP literals, and non-HTTPS URLs are intentionally out of scope."
+    });
+  }
+
+  const triageRequest = new Request("https://the402.tateprograms.com/api/triage", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      url: target,
+      method: input.method || "GET",
+      origin: input.origin || "https://tateprograms.com"
+    })
+  });
+  const triageResponse = await triageSurface(triageRequest);
+  const triageBody = await triageResponse.json().catch(() => ({ error: "unreadable_triage_response" }));
+
+  return json({
+    ok: true,
+    service: "Tate Programs x402 and agent-commerce readiness snapshot",
+    mode: "public_no_payment_triage",
+    checked_at: new Date().toISOString(),
+    input: {
+      url: target,
+      method: String(input.method || "GET").toUpperCase(),
+      origin: input.origin || "https://tateprograms.com"
+    },
+    triage_status: triageResponse.status,
+    triage: triageBody,
+    proof: [
+      "https://tateprograms.com/case-studies.html",
+      "https://tateprograms.com/agent-commerce-readiness-sprint.html"
+    ],
+    paid_scope: "For full patch order, receipts, spend boundaries, UCP/AP2/cart behavior, or white-label agency proof, email hello@tateprograms.com."
+  });
 }
 
 async function indexWatchSurface(request) {
