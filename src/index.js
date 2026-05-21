@@ -1869,25 +1869,35 @@ async function ucpReadinessSnapshot(request, requestOrigin) {
 
   const base = new URL(normalizedTarget);
   const origin = `${base.protocol}//${base.host}`;
-  const candidates = [
+  const initialCandidates = [
     { id: "homepage", url: normalizedTarget, kind: "homepage" },
     { id: "ucp_profile", url: new URL("/.well-known/ucp", origin).toString(), kind: "ucp" },
     { id: "llms_txt", url: new URL("/llms.txt", origin).toString(), kind: "agent_docs" },
     { id: "llms_full_txt", url: new URL("/llms-full.txt", origin).toString(), kind: "agent_docs" },
     { id: "agents_md", url: new URL("/agents.md", origin).toString(), kind: "agent_docs" },
-    { id: "ucp_mcp", url: new URL("/api/ucp/mcp", origin).toString(), kind: "mcp" },
+    { id: "ucp_mcp_default", url: new URL("/api/ucp/mcp", origin).toString(), kind: "mcp", source: "default_path" },
     { id: "robots_txt", url: new URL("/robots.txt", origin).toString(), kind: "agent_docs" },
     { id: "sitemap_xml", url: new URL("/sitemap.xml", origin).toString(), kind: "discovery" },
     { id: "agentic_sitemap", url: new URL("/sitemap_agentic_discovery.xml", origin).toString(), kind: "discovery" }
   ];
 
-  const checks = await Promise.all(candidates.map(fetchUcpCandidate));
+  const initialChecks = await Promise.all(initialCandidates.map(fetchUcpCandidate));
+  const ucpProfile = initialChecks.find(check => check.id === "ucp_profile");
+  const existingCandidateUrls = new Set(initialCandidates.map(candidate => candidate.url));
+  const profileCandidates = extractUcpProfileCandidates(ucpProfile, origin)
+    .filter(candidate => {
+      if (existingCandidateUrls.has(candidate.url)) return false;
+      existingCandidateUrls.add(candidate.url);
+      return true;
+    });
+  const profileChecks = await Promise.all(profileCandidates.map(fetchUcpCandidate));
+  const checks = [...initialChecks, ...profileChecks];
   const homepage = checks.find(check => check.id === "homepage");
-  const ucp = checks.find(check => check.id === "ucp_profile");
+  const ucp = ucpProfile;
   const llms = checks.find(check => check.id === "llms_txt");
   const llmsFull = checks.find(check => check.id === "llms_full_txt");
   const agents = checks.find(check => check.id === "agents_md");
-  const mcp = checks.find(check => check.id === "ucp_mcp");
+  const mcp = selectBestUcpMcpCheck(checks);
   const sitemap = checks.find(check => check.id === "sitemap_xml");
   const agenticSitemap = checks.find(check => check.id === "agentic_sitemap");
   const schemaSignals = summarizeCommerceSchema(homepage?.body || "");
@@ -1922,7 +1932,7 @@ async function fetchUcpCandidate(candidate) {
   const started = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), 5000);
-  const isMcpListProbe = candidate.id === "ucp_mcp";
+  const isMcpListProbe = candidate.kind === "mcp";
   try {
     const response = await fetch(candidate.url, {
       method: isMcpListProbe ? "POST" : "GET",
@@ -1973,6 +1983,8 @@ function compactUcpCheck(check) {
   const body = check.body || "";
   return {
     id: check.id,
+    kind: check.kind,
+    source: check.source || null,
     method: check.method || "GET",
     url: check.url,
     final_url: check.final_url,
@@ -1985,6 +1997,46 @@ function compactUcpCheck(check) {
     signals: summarizeUcpBody(check.id, body),
     error: check.error || null
   };
+}
+
+function extractUcpProfileCandidates(ucpCheck, origin) {
+  const profile = parseJson(ucpCheck?.body || "");
+  const services = profile?.ucp?.services || profile?.services;
+  if (!services || typeof services !== "object") return [];
+
+  const candidates = [];
+  for (const [serviceName, declaration] of Object.entries(services)) {
+    const entries = Array.isArray(declaration) ? declaration : [declaration];
+    entries.forEach((entry, index) => {
+      if (!entry || typeof entry !== "object") return;
+      const transport = String(entry.transport || "").toLowerCase();
+      if (transport !== "mcp") return;
+      const endpoint = normalizeProfileEndpoint(entry.endpoint, origin);
+      if (!endpoint) return;
+      candidates.push({
+        id: `ucp_mcp_profile_${candidates.length + 1}`,
+        kind: "mcp",
+        source: "ucp_profile",
+        service: serviceName,
+        service_index: index,
+        url: endpoint
+      });
+    });
+  }
+
+  return candidates.slice(0, 4);
+}
+
+function normalizeProfileEndpoint(value, origin) {
+  if (!value || typeof value !== "string") return null;
+  let resolved;
+  try {
+    resolved = new URL(value, origin).toString();
+  } catch {
+    return null;
+  }
+
+  return validatePublicHttpsUrl(resolved).ok ? resolved : null;
 }
 
 function summarizeUcpBody(id, body) {
@@ -2020,7 +2072,8 @@ function summarizeMerchantPlatform(homepage, checks) {
   const llms = checks.find(check => check.id === "llms_txt");
   const llmsFull = checks.find(check => check.id === "llms_full_txt");
   const agents = checks.find(check => check.id === "agents_md");
-  const mcp = checks.find(check => check.id === "ucp_mcp");
+  const mcp = selectBestUcpMcpCheck(checks);
+  const mcpChecks = checks.filter(check => check.kind === "mcp");
   const agenticSitemap = checks.find(check => check.id === "agentic_sitemap");
 
   return {
@@ -2029,6 +2082,14 @@ function summarizeMerchantPlatform(homepage, checks) {
     has_agent_docs: Boolean(llms?.ok || llmsFull?.ok || agents?.ok),
     has_ucp_mcp: isReachablePublicCheck(mcp),
     ucp_mcp_status: mcp?.status || null,
+    ucp_mcp_url: mcp?.url || null,
+    ucp_mcp_source: mcp?.source || null,
+    ucp_mcp_candidates: mcpChecks.map(check => ({
+      url: check.url,
+      source: check.source || null,
+      status: check.status,
+      ok: Boolean(check.ok)
+    })),
     has_agentic_sitemap: Boolean(agenticSitemap?.ok),
     homepage_cache_policy: homepage?.cache_control || null,
     homepage_content_type: homepage?.content_type || headers || null
@@ -2039,6 +2100,16 @@ function isReachablePublicCheck(check) {
   if (!check || check.status === "fetch_failed") return false;
   const status = Number(check.status);
   return Number.isFinite(status) && status < 500;
+}
+
+function selectBestUcpMcpCheck(checks) {
+  const mcpChecks = checks.filter(check => check.kind === "mcp");
+  return (
+    mcpChecks.find(check => check.ok) ||
+    mcpChecks.find(isReachablePublicCheck) ||
+    mcpChecks.find(check => check.source === "ucp_profile") ||
+    mcpChecks[0]
+  );
 }
 
 function scoreUcpReadiness({ ucp, llms, llmsFull, agents, mcp, sitemap, agenticSitemap, schemaSignals, platformSignals }) {
@@ -2076,11 +2147,11 @@ function buildUcpReadinessFindings({ ucp, llms, llmsFull, agents, mcp, sitemap, 
   }
 
   if (mcp?.ok) {
-    findings.push("A public UCP MCP endpoint accepted the safe `tools/list` probe at `/api/ucp/mcp`.");
+    findings.push(`A public UCP MCP endpoint accepted the safe \`tools/list\` probe at \`${mcp.url}\`.`);
   } else if (isReachablePublicCheck(mcp)) {
-    findings.push("A public UCP MCP endpoint responded at `/api/ucp/mcp`, but the safe `tools/list` probe did not return HTTP 200.");
+    findings.push(`A public UCP MCP endpoint responded at \`${mcp.url}\`, but the safe \`tools/list\` probe did not return HTTP 200.`);
   } else {
-    findings.push("No public UCP MCP endpoint was reachable at `/api/ucp/mcp`.");
+    findings.push("No public UCP MCP endpoint was reachable from the default path or the UCP profile.");
   }
 
   if (agenticSitemap?.ok) {
