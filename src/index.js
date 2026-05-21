@@ -29,6 +29,7 @@ const INDEX_WATCH_PATH = "/api/x402/index-watch";
 const SKILL_TRUST_PATH = "/api/x402/skill-trust-check";
 const A2A_PATH = "/a2a";
 const TOOLS402_READINESS_PATH = "/api/tools402/readiness-snapshot";
+const UCP_READINESS_PATH = "/api/ucp/readiness";
 const PROVIDER_PROXY_TRIAGE_PATH = "/api/provider/triage";
 const PROVIDER_PROXY_INDEX_WATCH_PATH = "/api/provider/index-watch";
 const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
@@ -1303,6 +1304,14 @@ app.options(TOOLS402_READINESS_PATH, c => new Response(null, {
 app.get(TOOLS402_READINESS_PATH, c => c.json(tools402ReadinessInfo(), 200, JSON_HEADERS));
 app.post(TOOLS402_READINESS_PATH, c => tools402ReadinessSnapshot(c.req.raw));
 
+app.options(UCP_READINESS_PATH, c => new Response(null, {
+  status: 204,
+  headers: corsHeaders(c.req.header("origin"), "content-type")
+}));
+
+app.get(UCP_READINESS_PATH, c => c.json(ucpReadinessInfo(), 200, JSON_HEADERS));
+app.post(UCP_READINESS_PATH, c => ucpReadinessSnapshot(c.req.raw));
+
 async function paidRouteGuard(c, next) {
   if (c.req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) });
@@ -1806,6 +1815,245 @@ async function tools402ReadinessSnapshot(request) {
     ],
     paid_scope: "For full patch order, receipts, spend boundaries, UCP/AP2/cart behavior, or white-label agency proof, email hello@tateprograms.com."
   });
+}
+
+function ucpReadinessInfo() {
+  return {
+    ok: true,
+    service: "Tate Programs Universal Cart and UCP readiness snapshot",
+    endpoint: `https://the402.tateprograms.com${UCP_READINESS_PATH}`,
+    method: "POST",
+    inputs: {
+      url: "Public merchant, agency demo, product, or storefront URL.",
+      optional_origin: "Browser origin for CORS response only."
+    },
+    output: [
+      "well-known UCP profile status",
+      "agent-readable docs status",
+      "homepage commerce schema hints",
+      "catalog/cart/checkout/order risk notes",
+      "fixed-scope paid proof path"
+    ],
+    scope: "Public no-payment discovery only. No login, account creation, cart mutation, checkout attempt, payment, private endpoint guessing, or order lookup."
+  };
+}
+
+async function ucpReadinessSnapshot(request) {
+  let input;
+  try {
+    input = await request.json();
+  } catch {
+    return json({ error: "invalid_json" }, { status: 400 });
+  }
+
+  const rawTarget = String(input.url || input.domain || input.store || "").trim();
+  const normalizedTarget = rawTarget && !/^https?:\/\//i.test(rawTarget) ? `https://${rawTarget}` : rawTarget;
+  const safe = validatePublicHttpsUrl(normalizedTarget);
+  if (!safe.ok) {
+    return json({
+      ok: false,
+      service: "Tate Programs Universal Cart and UCP readiness snapshot",
+      error: safe.reason,
+      next_step: "Send a public HTTPS merchant, product, storefront, or agentic commerce demo URL."
+    }, { status: 400 });
+  }
+
+  const base = new URL(normalizedTarget);
+  const origin = `${base.protocol}//${base.host}`;
+  const candidates = [
+    { id: "homepage", url: normalizedTarget, kind: "homepage" },
+    { id: "ucp_profile", url: new URL("/.well-known/ucp", origin).toString(), kind: "ucp" },
+    { id: "llms_txt", url: new URL("/llms.txt", origin).toString(), kind: "agent_docs" },
+    { id: "agents_md", url: new URL("/agents.md", origin).toString(), kind: "agent_docs" },
+    { id: "robots_txt", url: new URL("/robots.txt", origin).toString(), kind: "agent_docs" },
+    { id: "sitemap_xml", url: new URL("/sitemap.xml", origin).toString(), kind: "discovery" }
+  ];
+
+  const checks = await Promise.all(candidates.map(fetchUcpCandidate));
+  const homepage = checks.find(check => check.id === "homepage");
+  const ucp = checks.find(check => check.id === "ucp_profile");
+  const llms = checks.find(check => check.id === "llms_txt");
+  const agents = checks.find(check => check.id === "agents_md");
+  const sitemap = checks.find(check => check.id === "sitemap_xml");
+  const schemaSignals = summarizeCommerceSchema(homepage?.body || "");
+  const platformSignals = summarizeMerchantPlatform(homepage, checks);
+  const findings = buildUcpReadinessFindings({ ucp, llms, agents, sitemap, schemaSignals, platformSignals });
+  const score = scoreUcpReadiness({ ucp, llms, agents, sitemap, schemaSignals, platformSignals });
+
+  return json({
+    ok: true,
+    service: "Tate Programs Universal Cart and UCP readiness snapshot",
+    checked_at: new Date().toISOString(),
+    input: {
+      url: normalizedTarget,
+      origin
+    },
+    score,
+    checks: checks.map(compactUcpCheck),
+    schema_signals: schemaSignals,
+    platform_signals: platformSignals,
+    findings,
+    paid_scope: {
+      readiness_map: "$750 for one authorized commerce surface",
+      launch_sprint: "$2,500+ for white-label rollout support or one implementation pass",
+      url: "https://tateprograms.com/universal-cart-readiness.html",
+      email: "hello@tateprograms.com"
+    },
+    scope: "Public no-payment discovery only. No login, account creation, cart mutation, checkout attempt, payment, private endpoint guessing, or order lookup."
+  });
+}
+
+async function fetchUcpCandidate(candidate) {
+  const started = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort("timeout"), 5000);
+  try {
+    const response = await fetch(candidate.url, {
+      method: "GET",
+      headers: {
+        accept: candidate.id === "homepage"
+          ? "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.2"
+          : "application/json,text/plain,text/markdown,application/xml,text/xml,*/*;q=0.2",
+        "user-agent": "TatePrograms-UCP-Readiness/1.0 (+https://tateprograms.com/universal-cart-readiness.html)"
+      },
+      redirect: "follow",
+      signal: controller.signal
+    });
+    const raw = await response.text();
+    return {
+      ...candidate,
+      ok: response.ok,
+      status: response.status,
+      elapsed_ms: Date.now() - started,
+      final_url: response.url,
+      content_type: response.headers.get("content-type") || null,
+      cache_control: response.headers.get("cache-control") || null,
+      body: raw.slice(0, 160000)
+    };
+  } catch (error) {
+    return {
+      ...candidate,
+      ok: false,
+      status: "fetch_failed",
+      elapsed_ms: Date.now() - started,
+      final_url: candidate.url,
+      content_type: null,
+      cache_control: null,
+      body: "",
+      error: error?.message || String(error)
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function compactUcpCheck(check) {
+  const body = check.body || "";
+  return {
+    id: check.id,
+    url: check.url,
+    final_url: check.final_url,
+    ok: Boolean(check.ok),
+    status: check.status,
+    elapsed_ms: check.elapsed_ms,
+    content_type: check.content_type,
+    cache_control: check.cache_control,
+    bytes_sampled: body.length,
+    signals: summarizeUcpBody(check.id, body),
+    error: check.error || null
+  };
+}
+
+function summarizeUcpBody(id, body) {
+  const lower = body.toLowerCase();
+  const signals = [];
+  if (!body) return signals;
+  if (id === "ucp_profile" || /universal commerce protocol|ucp|capabilities|negotiat/i.test(body)) signals.push("ucp_terms");
+  if (/mcp|model context protocol|tools\/list|json-rpc/i.test(body)) signals.push("mcp_terms");
+  if (/checkout|cart|order|fulfillment|refund|return/i.test(body)) signals.push("commerce_flow_terms");
+  if (/llms\.txt|agents\.md|agent|ai shopping|agentic/i.test(body)) signals.push("agent_discovery_terms");
+  if (/shopify|cdn\.shopify\.com|myshopify/i.test(lower)) signals.push("shopify_signal");
+  return [...new Set(signals)];
+}
+
+function summarizeCommerceSchema(homepageBody) {
+  const body = homepageBody || "";
+  return {
+    has_json_ld: /<script[^>]+application\/ld\+json/i.test(body),
+    product_schema: /"@type"\s*:\s*"?Product"?|schema\.org\/Product/i.test(body),
+    offer_schema: /"@type"\s*:\s*"?Offer"?|schema\.org\/Offer/i.test(body),
+    merchant_return_policy: /MerchantReturnPolicy|hasMerchantReturnPolicy|returnPolicy/i.test(body),
+    shipping_details: /OfferShippingDetails|shippingDetails|shippingRate|deliveryTime/i.test(body),
+    aggregate_rating: /AggregateRating|reviewRating|ratingValue/i.test(body),
+    checkout_or_cart_text: /cart|checkout|buy now|add to cart/i.test(body),
+    loyalty_or_subscription_text: /loyalty|reward|subscription|member/i.test(body)
+  };
+}
+
+function summarizeMerchantPlatform(homepage, checks) {
+  const body = homepage?.body || "";
+  const headers = `${homepage?.content_type || ""} ${homepage?.cache_control || ""}`;
+  const ucp = checks.find(check => check.id === "ucp_profile");
+  const llms = checks.find(check => check.id === "llms_txt");
+  const agents = checks.find(check => check.id === "agents_md");
+
+  return {
+    likely_shopify: /Shopify|cdn\.shopify\.com|myshopify|Shopify\.theme|shopify-section/i.test(body),
+    has_ucp_profile: Boolean(ucp?.ok),
+    has_agent_docs: Boolean(llms?.ok || agents?.ok),
+    homepage_cache_policy: homepage?.cache_control || null,
+    homepage_content_type: homepage?.content_type || headers || null
+  };
+}
+
+function scoreUcpReadiness({ ucp, llms, agents, sitemap, schemaSignals, platformSignals }) {
+  let score = 10;
+  if (platformSignals.likely_shopify) score += 10;
+  if (ucp?.ok) score += 25;
+  if (llms?.ok) score += 10;
+  if (agents?.ok) score += 10;
+  if (sitemap?.ok) score += 5;
+  if (schemaSignals.product_schema) score += 10;
+  if (schemaSignals.offer_schema) score += 8;
+  if (schemaSignals.merchant_return_policy) score += 8;
+  if (schemaSignals.shipping_details) score += 8;
+  if (schemaSignals.checkout_or_cart_text) score += 4;
+  return Math.max(0, Math.min(score, 100));
+}
+
+function buildUcpReadinessFindings({ ucp, llms, agents, sitemap, schemaSignals, platformSignals }) {
+  const findings = [];
+
+  if (ucp?.ok) {
+    findings.push("A public `/.well-known/ucp` profile was found.");
+  } else {
+    findings.push("No public `/.well-known/ucp` profile was found from this no-login check.");
+  }
+
+  if (llms?.ok || agents?.ok) {
+    findings.push("At least one agent-readable docs surface (`llms.txt` or `agents.md`) was found.");
+  } else {
+    findings.push("No `llms.txt` or `agents.md` agent-doc surface was found.");
+  }
+
+  if (!schemaSignals.product_schema) {
+    findings.push("Homepage sample did not expose obvious Product structured-data signals.");
+  }
+  if (!schemaSignals.merchant_return_policy) {
+    findings.push("Homepage sample did not expose obvious merchant return policy structured-data signals.");
+  }
+  if (!schemaSignals.shipping_details) {
+    findings.push("Homepage sample did not expose obvious shipping-detail structured-data signals.");
+  }
+  if (platformSignals.likely_shopify && !ucp?.ok) {
+    findings.push("Shopify signals are present, but the public UCP profile was not reachable at the checked well-known path.");
+  }
+  if (!sitemap?.ok) {
+    findings.push("Sitemap was not reachable from the standard `/sitemap.xml` path in this quick pass.");
+  }
+
+  findings.push("Manual proof still needed: cart mutation, checkout handoff, payment authorization, order webhooks, refunds/returns, and loyalty/account behavior.");
+  return findings;
 }
 
 async function indexWatchSurface(request) {
