@@ -532,8 +532,7 @@ function buildAtomicAccepts({ service, resource, paymentTargets }) {
     service,
     resource,
     facilitator: PAYAI_FACILITATOR_URL,
-    ownerUrl: "https://tateprograms.com",
-    contactEmail: "hello@tateprograms.com"
+    ownerUrl: "https://tateprograms.com"
   };
   const accepts = [];
 
