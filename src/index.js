@@ -1346,10 +1346,16 @@ app.get("/health", c => c.json({
   ]
 }, 200, JSON_HEADERS));
 
-app.get("/services", c => c.json({
-  provider: c.env.BRAND_NAME || "Tate Programs",
-  services: SERVICE_CATALOG.map(service => paidServiceWithEnv(service, c.env))
-}, 200, JSON_HEADERS));
+function serviceCatalogResponse(env = {}) {
+  return {
+    provider: env.BRAND_NAME || "Tate Programs",
+    services: SERVICE_CATALOG.map(service => paidServiceWithEnv(service, env))
+  };
+}
+
+app.get("/services", c => c.json(serviceCatalogResponse(c.env), 200, JSON_HEADERS));
+app.get("/services.json", c => c.json(serviceCatalogResponse(c.env), 200, JSON_HEADERS));
+app.get("/.well-known/services.json", c => c.json(serviceCatalogResponse(c.env), 200, JSON_HEADERS));
 
 app.get("/.well-known/agent-card.json", c => c.json(agentCard(c.env), 200, JSON_HEADERS));
 app.get("/.well-known/agent.json", c => c.json(a2aAgentCard(c.env), 200, JSON_HEADERS));
