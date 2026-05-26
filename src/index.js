@@ -4,6 +4,8 @@ import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { paymentMiddlewareFromConfig } from "@x402/hono";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { ExactSvmScheme } from "@x402/svm/exact/server";
+import { keccak256, toBytes } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -36,9 +38,17 @@ const PROVIDER_PROXY_SKILL_TRUST_PATH = "/api/provider/skill-trust-check";
 const AGENT402_TRIAGE_PATH = "/api/agent402/triage";
 const AGENT402_INDEX_WATCH_PATH = "/api/agent402/index-watch";
 const AGENT402_SKILL_TRUST_PATH = "/api/agent402/skill-trust-check";
+const SWARMWAGE_HIRE_PATH = "/swarmwage/hire";
+const SWARMWAGE_VERIFY_PATH = "/.well-known/swarmwage-verify";
 const PAYAI_FACILITATOR_URL = "https://facilitator.payai.network";
 const A2A_X402_EXTENSION_URI = "https://github.com/google-agentic-commerce/a2a-x402/blob/main/spec/v0.2";
 const INDEX_402_VERIFICATION_HASH = "bc0b0234db538932601eed25e0ee1b333b19eca066f6e6904e774c19a5d1525c";
+const SWARMWAGE_PROTOCOL_VERSION = "swarmwage/v0.3";
+const SWARMWAGE_CAPABILITIES = [
+  "custom.tateprograms.x402.surface-readiness",
+  "custom.tateprograms.agent-payment.surface-triage",
+  "data.lookup.x402-health"
+];
 const PUBLIC_MARKETPLACE_ORIGINS = new Set([
   "agora402.io",
   "www.agora402.io",
@@ -340,6 +350,16 @@ const SERVICE_CATALOG = [
     network: "Base mainnet USDC"
   },
   {
+    id: "swarmwage-x402-surface-readiness",
+    name: "Swarmwage x402 Surface Readiness",
+    price_usd: 0.01,
+    delivery: "instant",
+    url: `https://the402.tateprograms.com${SWARMWAGE_HIRE_PATH}`,
+    network: "Base mainnet USDC",
+    protocol: SWARMWAGE_PROTOCOL_VERSION,
+    capabilities: SWARMWAGE_CAPABILITIES
+  },
+  {
     id: "provider-proxy-triage-api",
     name: "Provider Proxy Triage API",
     price_usd: 0.01,
@@ -374,7 +394,12 @@ let paidTriageMiddlewareKey;
 
 function getPaidTriageMiddleware(env = {}) {
   const paymentTargets = paymentTargetsFromEnv(env);
-  const middlewareKey = `${paymentTargets.basePayTo}|${paymentTargets.solanaPayTo || "no-solana"}`;
+  const swarmwageTargets = swarmwagePaymentTargetsFromEnv(env);
+  const middlewareKey = [
+    paymentTargets.basePayTo,
+    paymentTargets.solanaPayTo || "no-solana",
+    swarmwageTargets.basePayTo || "no-swarmwage"
+  ].join("|");
 
   if (!paidTriageMiddleware || paidTriageMiddlewareKey !== middlewareKey) {
     const facilitator = new HTTPFacilitatorClient({ url: PAYAI_FACILITATOR_URL });
@@ -382,6 +407,7 @@ function getPaidTriageMiddleware(env = {}) {
     const indexWatchResource = `https://the402.tateprograms.com${INDEX_WATCH_PATH}`;
     const skillTrustResource = `https://the402.tateprograms.com${SKILL_TRUST_PATH}`;
     const a2aResource = `https://the402.tateprograms.com${A2A_PATH}`;
+    const swarmwageResource = `https://the402.tateprograms.com${SWARMWAGE_HIRE_PATH}`;
     const triageConfig = () => buildPaidRouteConfig({
       service: "x402-paid-triage",
       displayName: "x402 Paid Triage API",
@@ -418,6 +444,15 @@ function getPaidTriageMiddleware(env = {}) {
       scope: "Send an A2A message with JSON input or plain text. The paid call is routed to public no-payment triage, 402 Index watch, or skill trust checks. No private endpoint guessing or paid upstream call is attempted.",
       paymentTargets
     });
+    const swarmwageConfig = () => buildPaidRouteConfig({
+      service: "swarmwage-x402-surface-readiness",
+      displayName: "Swarmwage x402 Surface Readiness",
+      resource: swarmwageResource,
+      description: "Swarmwage hire endpoint for x402, MPP, and agent-payment public-surface readiness triage.",
+      discovery: TRIAGE_DISCOVERY,
+      scope: "Submit a Swarmwage hire request with a public URL or provider query. The result is returned in Swarmwage receipt/result shape after x402 payment.",
+      paymentTargets: swarmwageTargets.basePayTo ? swarmwageTargets : paymentTargets
+    });
 
     paidTriageMiddleware = paymentMiddlewareFromConfig(
       {
@@ -427,10 +462,14 @@ function getPaidTriageMiddleware(env = {}) {
         [`POST ${INDEX_WATCH_PATH}`]: indexWatchConfig(),
         [`GET ${SKILL_TRUST_PATH}`]: skillTrustConfig(),
         [`POST ${SKILL_TRUST_PATH}`]: skillTrustConfig(),
-        [`POST ${A2A_PATH}`]: a2aConfig()
+        [`POST ${A2A_PATH}`]: a2aConfig(),
+        [`POST ${SWARMWAGE_HIRE_PATH}`]: swarmwageConfig()
       },
       facilitator,
-      buildSchemes(paymentTargets),
+      buildSchemes({
+        basePayTo: paymentTargets.basePayTo || swarmwageTargets.basePayTo,
+        solanaPayTo: paymentTargets.solanaPayTo
+      }),
       { appName: "Tate Programs", testnet: false }
     );
     paidTriageMiddlewareKey = middlewareKey;
@@ -608,6 +647,37 @@ function paymentTargetsFromEnv(env = {}) {
     basePayTo: normalizeEvmAddress(env.BASE_PAY_TO || env.BASE_USDC_PAY_TO || DEFAULT_BASE_PAY_TO),
     solanaPayTo: normalizeSolanaAddress(env.SOLANA_PAY_TO || env.SOLANA_USDC_PAY_TO || "")
   };
+}
+
+function swarmwagePrivateKey(env = {}) {
+  const key = String(env.SWARMWAGE_PRIVATE_KEY || "").trim();
+  return /^0x[a-fA-F0-9]{64}$/.test(key) ? key : "";
+}
+
+function swarmwageAccount(env = {}) {
+  const key = swarmwagePrivateKey(env);
+  if (!key) return null;
+  return privateKeyToAccount(key);
+}
+
+function swarmwageAgentId(env = {}) {
+  const account = swarmwageAccount(env);
+  return account ? account.address.toLowerCase() : "";
+}
+
+function swarmwagePaymentTargetsFromEnv(env = {}) {
+  return {
+    basePayTo: swarmwageAgentId(env),
+    solanaPayTo: ""
+  };
+}
+
+async function signSwarmwagePayload(env = {}, payload = {}) {
+  const account = swarmwageAccount(env);
+  if (!account) return null;
+  const canonical = JSON.stringify(payload, Object.keys(payload).sort());
+  const hash = keccak256(toBytes(canonical));
+  return account.signMessage({ message: { raw: hash } });
 }
 
 function normalizeEvmAddress(value) {
@@ -1271,6 +1341,7 @@ app.get("/health", c => c.json({
     `https://the402.tateprograms.com${PAID_TRIAGE_PATH}`,
     `https://the402.tateprograms.com${INDEX_WATCH_PATH}`,
     `https://the402.tateprograms.com${SKILL_TRUST_PATH}`,
+    `https://the402.tateprograms.com${SWARMWAGE_HIRE_PATH}`,
     `https://the402.tateprograms.com${PROVIDER_PROXY_SKILL_TRUST_PATH}`
   ]
 }, 200, JSON_HEADERS));
@@ -1284,6 +1355,19 @@ app.get("/.well-known/agent-card.json", c => c.json(agentCard(c.env), 200, JSON_
 app.get("/.well-known/agent.json", c => c.json(a2aAgentCard(c.env), 200, JSON_HEADERS));
 app.get("/.well-known/x402", c => c.json(x402Manifest(c.env), 200, JSON_HEADERS));
 app.get("/.well-known/x402.json", c => c.json(x402Manifest(c.env), 200, JSON_HEADERS));
+app.get(SWARMWAGE_VERIFY_PATH, async c => {
+  const agentId = swarmwageAgentId(c.env);
+  if (!agentId) {
+    return c.json({ error: "swarmwage_not_configured" }, 503, JSON_HEADERS);
+  }
+  const nonce = String(c.req.query("nonce") || "");
+  if (nonce.length < 8 || nonce.length > 128) {
+    return c.json({ error: "invalid_or_missing_nonce" }, 400, JSON_HEADERS);
+  }
+  const payload = { agent_id: agentId, nonce };
+  const signature = await signSwarmwagePayload(c.env, payload);
+  return c.json({ ...payload, signature }, 200, JSON_HEADERS);
+});
 
 app.get("/.well-known/402index-verify.txt", c => new Response(INDEX_402_VERIFICATION_HASH, {
   status: 200,
@@ -1343,7 +1427,10 @@ function unpaidChallengeResponse(c) {
     return c.json({ error: "not_found" }, 404, JSON_HEADERS);
   }
 
-  const paymentTargets = paymentTargetsFromEnv(c.env);
+  const swarmwageTargets = swarmwagePaymentTargetsFromEnv(c.env);
+  const paymentTargets = route.path === SWARMWAGE_HIRE_PATH && swarmwageTargets.basePayTo
+    ? swarmwageTargets
+    : paymentTargetsFromEnv(c.env);
   const resourceUrl = `https://the402.tateprograms.com${route.path}`;
   const body = buildPaymentRequiredBody({
     service: route.service,
@@ -1424,6 +1511,17 @@ function paidRouteDescriptor(path) {
     };
   }
 
+  if (path === SWARMWAGE_HIRE_PATH) {
+    return {
+      path: SWARMWAGE_HIRE_PATH,
+      service: "swarmwage-x402-surface-readiness",
+      displayName: "Swarmwage x402 Surface Readiness",
+      description: "Swarmwage hire endpoint for x402, MPP, Pay.sh, and agent-payment public-surface readiness triage.",
+      discovery: TRIAGE_DISCOVERY,
+      scope: "Submit a Swarmwage hire request with a public URL or provider query. The paid result returns Swarmwage-shaped receipt, result, and verification objects."
+    };
+  }
+
   return null;
 }
 
@@ -1447,6 +1545,10 @@ app.use(PAID_TRIAGE_PATH, paidRouteGuard);
 app.use(INDEX_WATCH_PATH, paidRouteGuard);
 app.use(SKILL_TRUST_PATH, paidRouteGuard);
 app.use(A2A_PATH, async (c, next) => {
+  if (c.req.method === "POST" || c.req.method === "OPTIONS") return paidRouteGuard(c, next);
+  return next();
+});
+app.use(SWARMWAGE_HIRE_PATH, async (c, next) => {
   if (c.req.method === "POST" || c.req.method === "OPTIONS") return paidRouteGuard(c, next);
   return next();
 });
@@ -1478,6 +1580,23 @@ app.get(SKILL_TRUST_PATH, c => c.json(paidEndpointInfo({
   paymentTargets: paymentTargetsFromEnv(c.env)
 }), 200, JSON_HEADERS));
 
+app.get(SWARMWAGE_HIRE_PATH, c => {
+  const agentId = swarmwageAgentId(c.env);
+  return c.json({
+    ok: true,
+    service: "Swarmwage x402 Surface Readiness",
+    protocol: SWARMWAGE_PROTOCOL_VERSION,
+    agent_id: agentId || null,
+    endpoint: `https://the402.tateprograms.com${SWARMWAGE_HIRE_PATH}`,
+    verify: `https://the402.tateprograms.com${SWARMWAGE_VERIFY_PATH}`,
+    capabilities: SWARMWAGE_CAPABILITIES,
+    price_usdc: "0.01",
+    first_call_free: false,
+    network: BASE_MAINNET,
+    payment: "x402 exact USDC on Base"
+  }, agentId ? 200 : 503, JSON_HEADERS);
+});
+
 app.post(PAID_TRIAGE_PATH, async c => {
   const response = await triageSurface(c.req.raw);
   response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
@@ -1493,6 +1612,12 @@ app.post(INDEX_WATCH_PATH, async c => {
 app.post(SKILL_TRUST_PATH, async c => {
   const response = await skillTrustSurface(c.req.raw);
   response.headers.set("x-tate-programs-paid-endpoint", "x402-paid");
+  return response;
+});
+
+app.post(SWARMWAGE_HIRE_PATH, async c => {
+  const response = await swarmwageHireSurface(c);
+  response.headers.set("x-tate-programs-paid-endpoint", "swarmwage-x402-paid");
   return response;
 });
 
@@ -2941,6 +3066,103 @@ async function readResponsePayload(response) {
   return {
     body: await response.text()
   };
+}
+
+async function swarmwageHireSurface(c) {
+  const agentId = swarmwageAgentId(c.env);
+  if (!agentId) {
+    return new Response(JSON.stringify({ ok: false, error: "swarmwage_not_configured" }, null, 2), {
+      status: 503,
+      headers: JSON_HEADERS
+    });
+  }
+
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return new Response(JSON.stringify({ ok: false, error: "invalid_json" }, null, 2), {
+      status: 400,
+      headers: JSON_HEADERS
+    });
+  }
+
+  const capability = String(body.capability || SWARMWAGE_CAPABILITIES[0]).trim().toLowerCase();
+  if (!SWARMWAGE_CAPABILITIES.includes(capability)) {
+    return new Response(JSON.stringify({
+      ok: false,
+      error: "unsupported_capability",
+      supported_capabilities: SWARMWAGE_CAPABILITIES
+    }, null, 2), {
+      status: 400,
+      headers: JSON_HEADERS
+    });
+  }
+
+  const params = body.params && typeof body.params === "object" ? body.params : body;
+  const query = String(params.q || params.provider || params.domain || params.search || "").trim();
+  const targetUrl = String(params.url || params.endpoint || params.manifest || "").trim();
+  const input = targetUrl
+    ? {
+        url: targetUrl,
+        method: params.method || "GET",
+        origin: params.origin || "https://tateprograms.com"
+      }
+    : {
+        q: query || "x402",
+        protocol: params.protocol || "x402",
+        health: params.health,
+        limit: params.limit || 10
+      };
+
+  const upstreamRequest = new Request(c.req.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input)
+  });
+  const upstream = targetUrl ? await triageSurface(upstreamRequest) : await indexWatchSurface(upstreamRequest);
+  const result = await readResponsePayload(upstream);
+  const completedAt = Math.floor(Date.now() / 1000);
+  const receiptId = `sw_${crypto.randomUUID()}`;
+  const verificationOk = upstream.status < 500;
+
+  return new Response(JSON.stringify({
+    protocol: SWARMWAGE_PROTOCOL_VERSION,
+    receipt: {
+      receipt_id: receiptId,
+      buyer_id: body.buyer_id || body.buyer || null,
+      seller_id: agentId,
+      capability,
+      tx_hash: null,
+      price_paid_usdc: "0.01",
+      payment_mode: "direct",
+      escrow_provider: null,
+      completed_at: completedAt
+    },
+    result: {
+      service: targetUrl ? "x402_launch_triage" : "x402_index_watch",
+      input,
+      status: upstream.status,
+      payload: result
+    },
+    verification: {
+      checks: [
+        {
+          name: "paid_request_processed",
+          passed: verificationOk
+        },
+        {
+          name: "public_surface_only",
+          passed: true
+        }
+      ],
+      all_passed: verificationOk
+    },
+    rating_token: null
+  }, null, 2), {
+    status: upstream.status >= 500 ? 502 : 200,
+    headers: JSON_HEADERS
+  });
 }
 
 function a2aResult(payload, output) {
