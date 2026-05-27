@@ -77,6 +77,10 @@ const PUBLIC_MARKETPLACE_ORIGINS = new Set([
   "tools402.dev",
   "www.tools402.dev",
   "api.tools402.dev",
+  "mcp.base.org",
+  "chatgpt.com",
+  "claude.ai",
+  "cursor.com",
   "x402-agent-pay.com",
   "www.x402-agent-pay.com"
 ]);
